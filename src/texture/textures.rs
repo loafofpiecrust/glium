@@ -13,10 +13,10 @@ pub struct Texture1d(TextureImplementation);
 
 impl Texture1d {
     /// Creates a one-dimensional texture.
-    pub fn new<P: PixelValue, T: Texture1dData<P>>(display: &Display, data: T) -> Texture1d {
+    pub fn new<T: Texture1dData>(display: &Display, data: T) -> Texture1d {
         let data = data.into_vec();
         let width = data.len() as u32;
-        let format = PixelValue::get_format(None::<P>).to_default_float_format();
+        let format = PixelValue::get_format(None::< <T as Texture1dData>::Pixel>).to_default_float_format();
         Texture1d(TextureImplementation::new(display, format, Some(data), width, None, None, None))
     }
 }
@@ -42,7 +42,7 @@ impl Texture1dArray {
     /// # Panic
     ///
     /// Panics if all the elements don't have the same dimensions.
-    pub fn new<P: PixelValue, T: Texture1dData<P>>(display: &Display, data: Vec<T>)
+    pub fn new<T: Texture1dData>(display: &Display, data: Vec<T>)
         -> Texture1dArray
     {
         let array_size = data.len();
@@ -51,7 +51,7 @@ impl Texture1dArray {
             let d = t.into_vec(); width = d.len(); d.into_iter()
         }).collect();
 
-        let format = PixelValue::get_format(None::<P>).to_default_float_format();
+        let format = PixelValue::get_format(None::< <T as Texture1dData>::Pixel>).to_default_float_format();
 
         Texture1dArray(TextureImplementation::new(display, format, Some(data), width as u32, None,
             None, Some(array_size as u32)))
@@ -75,8 +75,8 @@ pub struct Texture2d(TextureImplementation);
 
 impl Texture2d {
     /// Creates a two-dimensional texture.
-    pub fn new<P: PixelValue, T: Texture2dData<P>>(display: &Display, data: T) -> Texture2d {
-        let format = PixelValue::get_format(None::<P>).to_default_float_format();
+    pub fn new<T: Texture2dData>(display: &Display, data: T) -> Texture2d {
+        let format = PixelValue::get_format(None::< <T as Texture2dData>::Pixel>).to_default_float_format();
         let dimensions = data.get_dimensions();
         let data = data.into_vec();
 
@@ -129,9 +129,9 @@ impl Texture2d {
             .with_color_texture(self))
     }
 
-    /// Reads the content of the texture into a `Texture2DData`.
-    pub fn read<P, T>(&self) -> T where P: PixelValue, T: Texture2dData<P> {
-        let data = self.0.read::<P>(0);
+    /// Reads the content of the texture into a `Texture2dData`.
+    pub fn read<T>(&self) -> T where T: Texture2dData {
+        let data = self.0.read::< <T as Texture2dData>::Pixel>(0);
         Texture2dData::from_vec(data, self.get_width() as u32)
     }
 }
@@ -157,10 +157,10 @@ pub struct CompressedTexture2d(TextureImplementation);
 
 impl CompressedTexture2d {
     /// Creates a two-dimensional texture.
-    pub fn new<P: PixelValue, T: Texture2dData<P>>(display: &Display, data: T)
+    pub fn new<T: Texture2dData>(display: &Display, data: T)
         -> CompressedTexture2d
     {
-        let format = PixelValue::get_format(None::<P>).to_default_compressed_format();
+        let format = PixelValue::get_format(None::< <T as Texture2dData>::Pixel>).to_default_compressed_format();
         let dimensions = data.get_dimensions();
         let data = data.into_vec();
 
@@ -169,7 +169,7 @@ impl CompressedTexture2d {
     }
 
     /// Creates a two-dimensional texture with a specific format.
-    pub fn with_format<P: PixelValue, T: Texture2dData<P>>(display: &Display,
+    pub fn with_format<T: Texture2dData>(display: &Display,
         format: CompressedFormat, data: T) -> CompressedTexture2d
     {
         let format = format.to_gl_enum();
@@ -181,8 +181,8 @@ impl CompressedTexture2d {
     }
 
     /// Reads the content of the texture into a `Texture2dData`.
-    pub fn read<P, T>(&self) -> T where P: PixelValue, T: Texture2dData<P> {
-        let data = self.0.read::<P>(0);
+    pub fn read<T>(&self) -> T where T: Texture2dData {
+        let data = self.0.read::< <T as Texture2dData>::Pixel>(0);
         Texture2dData::from_vec(data, self.get_width() as u32)
     }
 }
@@ -208,7 +208,7 @@ impl Texture2dArray {
     /// # Panic
     ///
     /// Panics if all the elements don't have the same dimensions.
-    pub fn new<P: PixelValue, T: Texture2dData<P>>(display: &Display, data: Vec<T>)
+    pub fn new<T: Texture2dData>(display: &Display, data: Vec<T>)
         -> Texture2dArray
     {
         let array_size = data.len();
@@ -217,7 +217,7 @@ impl Texture2dArray {
             dimensions = t.get_dimensions(); t.into_vec().into_iter()
         }).collect();
 
-        let format = PixelValue::get_format(None::<P>).to_default_float_format();
+        let format = PixelValue::get_format(None::< <T as Texture2dData>::Pixel>).to_default_float_format();
 
         Texture2dArray(TextureImplementation::new(display, format, Some(data), dimensions.0,
             Some(dimensions.1), None, Some(array_size as u32)))
@@ -241,10 +241,10 @@ pub struct Texture3d(TextureImplementation);
 
 impl Texture3d {
     /// Creates a three-dimensional texture.
-    pub fn new<P: PixelValue, T: Texture3dData<P>>(display: &Display, data: T) -> Texture3d {
+    pub fn new<T: Texture3dData>(display: &Display, data: T) -> Texture3d {
         let dimensions = data.get_dimensions();
         let data = data.into_vec();
-        let format = PixelValue::get_format(None::<P>).to_default_float_format();
+        let format = PixelValue::get_format(None::< <T as Texture3dData>::Pixel>).to_default_float_format();
         Texture3d(TextureImplementation::new(display, format, Some(data), dimensions.0,
             Some(dimensions.1), Some(dimensions.2), None))
     }

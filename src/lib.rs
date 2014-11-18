@@ -176,6 +176,7 @@ target.finish();
 
 */
 
+#![feature(associated_types)]
 #![feature(if_let)]
 #![feature(phase)]
 #![feature(slicing_syntax)]
