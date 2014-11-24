@@ -78,7 +78,7 @@ The purpose of a program is to instruct the GPU how to process our mesh in order
 
 ```no_run
 # let display: glium::Display = unsafe { std::mem::uninitialized() };
-let program = glium::Program::new(&display, 
+let program = glium::Program::new(&display,
     // vertex shader
     "   #version 110
 
@@ -188,7 +188,6 @@ target.finish();
 #[phase(plugin)]
 extern crate gl_generator;
 
-extern crate cgmath;
 extern crate glutin;
 #[cfg(feature = "image")]
 extern crate image;
@@ -266,7 +265,7 @@ pub enum BlendingFunction {
 }
 
 /// Culling mode.
-/// 
+///
 /// Describes how triangles could be filtered before the fragment part.
 #[deriving(Clone, Show, PartialEq, Eq)]
 pub enum BackfaceCullingMode {
@@ -285,7 +284,7 @@ pub enum BackfaceCullingMode {
 #[deriving(Clone, Show, PartialEq, Eq)]
 pub enum DepthFunction {
     /// Never replace the target pixel.
-    /// 
+    ///
     /// This option doesn't really make sense, but is here for completeness.
     Ignore,
 
@@ -362,7 +361,7 @@ impl PolygonMode {
 /// Represents the parameters to use when drawing.
 ///
 /// Example:
-/// 
+///
 /// ```
 /// let params = glium::DrawParameters {
 ///     depth_function: Some(glium::IfLess),
@@ -373,7 +372,7 @@ impl PolygonMode {
 #[deriving(Clone, Show, PartialEq)]
 pub struct DrawParameters {
     /// The function that the GPU will use to determine whether to write over an existing pixel
-    ///  on the target. 
+    ///  on the target.
     /// `None` means "don't care".
     pub depth_function: Option<DepthFunction>,
 

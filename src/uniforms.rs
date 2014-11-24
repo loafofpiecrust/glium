@@ -201,7 +201,7 @@ impl SamplerWrapFunction {
             SamplerWrapFunction::Clamp => gl::CLAMP_TO_EDGE,
         }
     }
-} 
+}
 
 /// The function that the GPU will use when loading the value of a texel.
 #[deriving(Show, Clone, Hash, PartialEq, Eq)]
@@ -555,7 +555,7 @@ impl UniformValue for nalgebra::na::Mat4<f32> {
     }
 }*/
 
-impl UniformValue for cgmath::Matrix2<f32> {
+/*impl UniformValue for cgmath::Matrix2<f32> {
     fn to_binder(&self) -> UniformValueBinder {
         use cgmath::FixedArray;
         let my_value = self.into_fixed();
@@ -601,4 +601,4 @@ impl UniformValue for cgmath::Vector4<f32> {
         let my_value = self.into_fixed();
         my_value.to_binder()
     }
-}
+}*/

@@ -22,8 +22,8 @@ git = "http://github.com/bjz/gl-rs"
 git = "http://github.com/tomaka/glutin"
 features = ["window", "headless"]
 
-[dependencies.cgmath]
-git = "https://github.com/bjz/cgmath-rs"
+#[dependencies.cgmath]
+#git = "https://github.com/bjz/cgmath-rs"
 
 #[dependencies.nalgebra]
 #git = "https://github.com/sebcrozet/nalgebra"
