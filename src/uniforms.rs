@@ -75,7 +75,7 @@ let uniforms = Uniforms {
 */
 
 use {gl, context, texture};
-use cgmath;
+//use cgmath;
 //use nalgebra;
 use std::sync::Arc;
 
