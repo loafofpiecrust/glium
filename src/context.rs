@@ -2,12 +2,11 @@ use gl;
 use glutin;
 use std::sync::atomic::{AtomicUint, Relaxed};
 use std::sync::{Arc, Mutex};
-use std::task::TaskBuilder;
 use GliumCreationError;
 
 enum Message {
     EndFrame,
-    Execute(proc(CommandContext):Send),
+    Execute(Box<for<'a, 'b> ::std::thunk::Invoke<CommandContext<'a, 'b>, ()> + Send>),
 }
 
 pub struct Context {
@@ -16,6 +15,8 @@ pub struct Context {
 
     /// Dimensions of the frame buffer.
     dimensions: Arc<(AtomicUint, AtomicUint)>,
+
+    capabilities: Arc<Capabilities>,
 }
 
 pub struct CommandContext<'a, 'b> {
@@ -47,6 +48,9 @@ pub struct GLState {
 
     /// Whether GL_DITHER is enabled
     pub enabled_dither: bool,
+
+    /// Whether GL_MULTISAMPLE is enabled
+    pub enabled_multisample: bool,
 
     /// Whether GL_POLYGON_OFFSET_FILL is enabled
     pub enabled_polygon_offset_fill: bool,
@@ -80,25 +84,26 @@ pub struct GLState {
     pub clear_stencil: gl::types::GLint,
 
     /// The latest buffer bound to `GL_ARRAY_BUFFER`.
-    pub array_buffer_binding: Option<gl::types::GLuint>,
-
-    /// The latest buffer bound to `GL_ELEMENT_ARRAY_BUFFER`.
-    pub element_array_buffer_binding: Option<gl::types::GLuint>,
+    pub array_buffer_binding: gl::types::GLuint,
 
     /// The latest buffer bound to `GL_PIXEL_PACK_BUFFER`.
-    pub pixel_pack_buffer_binding: Option<gl::types::GLuint>,
+    pub pixel_pack_buffer_binding: gl::types::GLuint,
 
     /// The latest buffer bound to `GL_PIXEL_UNPACK_BUFFER`.
-    pub pixel_unpack_buffer_binding: Option<gl::types::GLuint>,
+    pub pixel_unpack_buffer_binding: gl::types::GLuint,
 
     /// The latest buffer bound to `GL_READ_FRAMEBUFFER`.
-    pub read_framebuffer: Option<gl::types::GLuint>,
+    pub read_framebuffer: gl::types::GLuint,
 
     /// The latest buffer bound to `GL_DRAW_FRAMEBUFFER`.
-    pub draw_framebuffer: Option<gl::types::GLuint>,
+    pub draw_framebuffer: gl::types::GLuint,
+
+    /// The latest values passed to `glReadBuffer` with the default framebuffer.
+    /// `None` means "unknown".
+    pub default_framebuffer_read: Option<gl::types::GLenum>,
 
     /// The latest render buffer bound with `glBindRenderbuffer`.
-    pub renderbuffer: Option<gl::types::GLuint>,
+    pub renderbuffer: gl::types::GLuint,
 
     /// The latest values passed to `glBlendFunc`.
     pub blend_func: (gl::types::GLenum, gl::types::GLenum),
@@ -131,6 +136,7 @@ impl GLState {
             enabled_debug_output_synchronous: false,
             enabled_depth_test: false,
             enabled_dither: false,
+            enabled_multisample: true,
             enabled_polygon_offset_fill: false,
             enabled_sample_alpha_to_coverage: false,
             enabled_sample_coverage: false,
@@ -142,13 +148,13 @@ impl GLState {
             clear_color: (0.0, 0.0, 0.0, 0.0),
             clear_depth: 1.0,
             clear_stencil: 0,
-            array_buffer_binding: None,
-            element_array_buffer_binding: None,
-            pixel_pack_buffer_binding: None,
-            pixel_unpack_buffer_binding: None,
-            read_framebuffer: None,
-            draw_framebuffer: None,
-            renderbuffer: None,
+            array_buffer_binding: 0,
+            pixel_pack_buffer_binding: 0,
+            pixel_unpack_buffer_binding: 0,
+            read_framebuffer: 0,
+            draw_framebuffer: 0,
+            default_framebuffer_read: None,
+            renderbuffer: 0,
             depth_func: gl::LESS,
             blend_func: (0, 0),     // no default specified
             viewport: viewport,
@@ -194,12 +200,20 @@ pub struct ExtensionsList {
     pub gl_nvx_gpu_memory_info: bool,
     /// GL_ATI_meminfo
     pub gl_ati_meminfo: bool,
+    /// GL_ARB_vertex_array_object
+    pub gl_arb_vertex_array_object: bool,
 }
 
 /// Represents the capabilities of the context.
 pub struct Capabilities {
     /// True if the context supports left and right buffers.
     pub stereo: bool,
+
+    /// Number of bits in the default framebuffer's depth buffer
+    pub depth_bits: Option<u16>,
+
+    /// Number of bits in the default framebuffer's stencil buffer
+    pub stencil_bits: Option<u16>,
 }
 
 impl Context {
@@ -210,16 +224,12 @@ impl Context {
         let (tx_commands, rx_commands) = channel();
 
         let dimensions = Arc::new((AtomicUint::new(800), AtomicUint::new(600)));
-
-        let context = Context {
-            commands: Mutex::new(tx_commands),
-            events: Mutex::new(rx_events),
-            dimensions: dimensions.clone(),
-        };
+        let dimensions2 = dimensions.clone();
 
         let window = try!(window.build());
+        let (tx_success, rx_success) = channel();
 
-        spawn(proc() {
+        spawn(move || {
             unsafe { window.make_current(); }
 
             let gl = gl::Gl::load_with(|symbol| window.get_proc_address(symbol));
@@ -238,10 +248,28 @@ impl Context {
             };
 
             // getting the GL version and extensions
-            let opengl_es = false;
+            let opengl_es = match window.get_api() { glutin::Api::OpenGlEs => true, _ => false };       // TODO: fix glutin::Api not implementing Eq
             let version = get_gl_version(&gl);
-            let capabilities = get_capabilities(&gl, opengl_es);
+            let capabilities = Arc::new(get_capabilities(&gl, &version, opengl_es));
             let extensions = get_extensions(&gl);
+
+            // checking compatibility with glium
+            match check_gl_compatibility(CommandContext {
+                gl: &gl,
+                state: &mut gl_state,
+                version: &version,
+                extensions: &extensions,
+                opengl_es: opengl_es,
+                capabilities: &*capabilities,
+            }) {
+                Err(e) => {
+                    tx_success.send(Err(e));
+                    return;
+                },
+                Ok(_) => {
+                    tx_success.send(Ok(capabilities.clone()));
+                }
+            };
 
             // main loop
             'main: loop {
@@ -249,9 +277,13 @@ impl Context {
                 loop {
                     match rx_commands.recv_opt() {
                         Ok(Message::EndFrame) => break,
-                        Ok(Message::Execute(cmd)) => cmd(CommandContext {
-                            gl:&gl, state: &mut gl_state, version: &version, extensions: &extensions,
-                            opengl_es: opengl_es, capabilities: &capabilities,
+                        Ok(Message::Execute(cmd)) => cmd.invoke(CommandContext {
+                            gl: &gl,
+                            state: &mut gl_state,
+                            version: &version,
+                            extensions: &extensions,
+                            opengl_es: opengl_es,
+                            capabilities: &*capabilities,
                         }),
                         Err(_) => break 'main
                     }
@@ -290,9 +322,15 @@ impl Context {
             }
         });
 
-        Ok(context)
+        Ok(Context {
+            commands: Mutex::new(tx_commands),
+            events: Mutex::new(rx_events),
+            dimensions: dimensions2,
+            capabilities: try!(rx_success.recv()),
+        })
     }
 
+    #[cfg(feature = "headless")]
     pub fn new_from_headless(window: glutin::HeadlessRendererBuilder)
         -> Result<Context, GliumCreationError>
     {
@@ -301,41 +339,57 @@ impl Context {
 
         // TODO: fixme
         let dimensions = Arc::new((AtomicUint::new(800), AtomicUint::new(600)));
-
-        let context = Context {
-            commands: Mutex::new(tx_commands),
-            events: Mutex::new(rx_events),
-            dimensions: dimensions,
-        };
+        let dimensions2 = dimensions.clone();
 
         let (tx_success, rx_success) = channel();
 
-        spawn(proc() {
+        spawn(move || {
             let window = match window.build() {
                 Ok(w) => w,
                 Err(e) => {
-                    tx_success.send(Err(e));
+                    tx_success.send(Err(::std::error::FromError::from_error(e)));
                     return;
                 }
             };
             unsafe { window.make_current(); }
-            tx_success.send(Ok(()));
 
             let gl = gl::Gl::load_with(|symbol| window.get_proc_address(symbol));
             // TODO: call glViewport
 
             // building the GLState, version, and extensions
             let mut gl_state = GLState::new_defaults((0, 0, 0, 0));    // FIXME: 
-            let opengl_es = false;
+            let opengl_es = match window.get_api() { glutin::Api::OpenGlEs => true, _ => false };       // TODO: fix glutin::Api not implementing Eq
             let version = get_gl_version(&gl);
             let extensions = get_extensions(&gl);
-            let capabilities = get_capabilities(&gl, opengl_es);
+            let capabilities = Arc::new(get_capabilities(&gl, &version, opengl_es));
+
+            // checking compatibility with glium
+            match check_gl_compatibility(CommandContext {
+                gl: &gl,
+                state: &mut gl_state,
+                version: &version,
+                extensions: &extensions,
+                opengl_es: opengl_es,
+                capabilities: &*capabilities,
+            }) {
+                Err(e) => {
+                    tx_success.send(Err(e));
+                    return;
+                },
+                Ok(_) => {
+                    tx_success.send(Ok(capabilities.clone()));
+                }
+            };
 
             loop {
                 match rx_commands.recv_opt() {
-                    Ok(Message::Execute(cmd)) => cmd(CommandContext {
-                        gl:&gl, state: &mut gl_state, version: &version, extensions: &extensions,
-                        opengl_es: opengl_es, capabilities: &capabilities,
+                    Ok(Message::Execute(cmd)) => cmd.invoke(CommandContext {
+                        gl: &gl,
+                        state: &mut gl_state,
+                        version: &version,
+                        extensions: &extensions,
+                        opengl_es: opengl_es,
+                        capabilities: &*capabilities,
                     }),
                     Ok(Message::EndFrame) => (),     // ignoring buffer swapping
                     Err(_) => break
@@ -343,8 +397,12 @@ impl Context {
             }
         });
 
-        try!(rx_success.recv());
-        Ok(context)
+        Ok(Context {
+            commands: Mutex::new(tx_commands),
+            events: Mutex::new(rx_events),
+            dimensions: dimensions2,
+            capabilities: try!(rx_success.recv()),
+        })
     }
 
     pub fn get_framebuffer_dimensions(&self) -> (uint, uint) {
@@ -354,8 +412,8 @@ impl Context {
         )
     }
 
-    pub fn exec(&self, f: proc(CommandContext): Send) {
-        self.commands.lock().send(Message::Execute(f));
+    pub fn exec<F>(&self, f: F) where F: FnOnce(CommandContext) + Send {
+        self.commands.lock().send(Message::Execute(box f));
     }
 
     pub fn swap_buffers(&self) {
@@ -374,6 +432,43 @@ impl Context {
         }
         result
     }
+
+    pub fn capabilities(&self) -> &Capabilities {
+        &*self.capabilities
+    }
+}
+
+fn check_gl_compatibility(ctxt: CommandContext) -> Result<(), GliumCreationError> {
+    let mut result = Vec::new();
+
+    if ctxt.opengl_es {
+        if ctxt.version < &GlVersion(3, 0) {
+            result.push("OpenGL ES version inferior to 3.0");
+        }
+
+    } else {
+        if ctxt.version < &GlVersion(2, 0) {
+            result.push("OpenGL version inferior to 2.0 is not supported");
+        }
+
+        if !ctxt.extensions.gl_ext_framebuffer_object && ctxt.version < &GlVersion(3, 0) {
+            result.push("OpenGL implementation doesn't support framebuffers");
+        }
+
+        if !ctxt.extensions.gl_ext_framebuffer_blit && ctxt.version < &GlVersion(3, 0) {
+            result.push("OpenGL implementation doesn't support blitting framebuffers");
+        }
+
+        if !ctxt.extensions.gl_arb_vertex_array_object && ctxt.version < &GlVersion(3, 0) {
+            result.push("OpenGL implementation doesn't support vertex array objects");
+        }
+    }
+
+    if result.len() == 0 {
+        Ok(())   
+    } else {
+        Err(GliumCreationError::IncompatibleOpenGl(result.connect("\n")))
+    }
 }
 
 fn get_gl_version(gl: &gl::Gl) -> GlVersion {
@@ -387,7 +482,7 @@ fn get_gl_version(gl: &gl::Gl) -> GlVersion {
         let version = version.words().next().expect("glGetString(GL_VERSION) returned an empty \
                                                      string");
 
-        let mut iter = version.split(|c: char| c == '.');
+        let mut iter = version.split(move |&mut: c: char| c == '.');
         let major = iter.next().unwrap();
         let minor = iter.next().expect("glGetString(GL_VERSION) did not return a correct version");
 
@@ -434,6 +529,7 @@ fn get_extensions(gl: &gl::Gl) -> ExtensionsList {
         gl_khr_debug: false,
         gl_nvx_gpu_memory_info: false,
         gl_ati_meminfo: false,
+        gl_arb_vertex_array_object: false,
     };
 
     for extension in strings.into_iter() {
@@ -445,6 +541,7 @@ fn get_extensions(gl: &gl::Gl) -> ExtensionsList {
             "GL_KHR_debug" => extensions.gl_khr_debug = true,
             "GL_NVX_gpu_memory_info" => extensions.gl_nvx_gpu_memory_info = true,
             "GL_ATI_meminfo" => extensions.gl_ati_meminfo = true,
+            "GL_ARB_vertex_array_object" => extensions.gl_arb_vertex_array_object = true,
             _ => ()
         }
     }
@@ -452,17 +549,52 @@ fn get_extensions(gl: &gl::Gl) -> ExtensionsList {
     extensions
 }
 
-fn get_capabilities(gl: &gl::Gl, gl_es: bool) -> Capabilities {
+fn get_capabilities(gl: &gl::Gl, version: &GlVersion, gl_es: bool) -> Capabilities {
+    use std::mem;
+
     Capabilities {
         stereo: unsafe {
             if gl_es {
                 false
             } else {
-                use std::mem;
                 let mut val: gl::types::GLboolean = mem::uninitialized();
                 gl.GetBooleanv(gl::STEREO, &mut val);
                 val != 0
             }
-        }
+        },
+
+        depth_bits: unsafe {
+            let mut value = mem::uninitialized();
+
+            if version >= &GlVersion(3, 0) {
+                gl.GetFramebufferAttachmentParameteriv(gl::FRAMEBUFFER, gl::DEPTH,
+                                                       gl::FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE,
+                                                       &mut value);
+            } else {
+                gl.GetIntegerv(gl::DEPTH_BITS, &mut value);
+            };
+
+            match value {
+                0 => None,
+                v => Some(v as u16),
+            }
+        },
+
+        stencil_bits: unsafe {
+            let mut value = mem::uninitialized();
+
+            if version >= &GlVersion(3, 0) {
+                gl.GetFramebufferAttachmentParameteriv(gl::FRAMEBUFFER, gl::STENCIL,
+                                                       gl::FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE,
+                                                       &mut value);
+            } else {
+                gl.GetIntegerv(gl::STENCIL_BITS, &mut value);
+            };
+
+            match value {
+                0 => None,
+                v => Some(v as u16),
+            }
+        },
     }
 }

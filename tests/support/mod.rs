@@ -16,6 +16,7 @@ pub fn is_headless() -> bool {
 }
 
 /// Builds a headless display for tests.
+#[cfg(feature = "headless")]
 pub fn build_display() -> glium::Display {
     let display = if is_headless() {
         glutin::HeadlessRendererBuilder::new(1024, 768).build_glium().unwrap()
@@ -25,7 +26,29 @@ pub fn build_display() -> glium::Display {
 
     unsafe {
         display.set_debug_callback_sync(|&mut: msg: String, _, _, severity: glium::debug::Severity| {
-            if severity == glium::debug::Medium || severity == glium::debug::High {
+            if severity == glium::debug::Severity::Medium ||
+               severity == glium::debug::Severity::High
+            {
+                panic!("{}", msg);
+            }
+        })
+    };
+
+    display
+}
+
+/// Builds a headless display for tests.
+#[cfg(not(feature = "headless"))]
+pub fn build_display() -> glium::Display {
+    assert!(!is_headless());
+
+    let display = glutin::WindowBuilder::new().with_visibility(false).build_glium().unwrap();
+
+    unsafe {
+        display.set_debug_callback_sync(|&mut: msg: String, _, _, severity: glium::debug::Severity| {
+            if severity == glium::debug::Severity::Medium ||
+               severity == glium::debug::Severity::High
+            {
                 panic!("{}", msg);
             }
         })
@@ -47,6 +70,7 @@ pub fn build_unicolor_texture2d(display: &glium::Display, red: f32, green: f32, 
 }
 
 #[vertex_format]
+#[deriving(Copy)]
 struct Vertex {
     position: [f32, ..2],
 }
@@ -81,5 +105,21 @@ pub fn build_fullscreen_red_pipeline(display: &glium::Display) -> (glium::Vertex
                 }
             ",
             None).unwrap()
+    )
+}
+
+/// Builds a VB and an IB corresponding to a rectangle.
+///
+/// The VB has the "position" attribute of type "vec2".
+pub fn build_rectangle_vb_ib(display: &glium::Display)
+    -> (glium::VertexBuffer<Vertex>, glium::IndexBuffer)
+{
+    (
+        glium::VertexBuffer::new(display, vec![
+            Vertex { position: [-1.0,  1.0] }, Vertex { position: [1.0,  1.0] },
+            Vertex { position: [-1.0, -1.0] }, Vertex { position: [1.0, -1.0] },
+        ]),
+
+        glium::IndexBuffer::new(display, glium::index_buffer::TriangleStrip(vec![0u8, 1, 2, 3])),
     )
 }

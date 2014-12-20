@@ -33,51 +33,14 @@ let uniforms = Uniforms {
 
 Each field must implement the `UniformValue` trait.
 
-## Textures and samplers
-
-To use a texture, write a `&Texture2d` like a regular uniform value.
-
-To use a texture with a sampler, write a `Sampler` object.
-
-Example:
-
-```no_run
-# #![feature(phase)]
-# #[phase(plugin)]
-# extern crate glium_macros;
-# extern crate glium;
-# fn main() {
-#[uniforms]
-struct Uniforms<'a> {
-    texture: glium::uniforms::Sampler<'a, glium::Texture2d>,
-    matrix: [[f32, ..4], ..4],
-}
-
-# let display: glium::Display = unsafe { std::mem::uninitialized() };
-# let tex = unsafe { std::mem::uninitialized() };
-# let matrix = unsafe { std::mem::uninitialized() };
-let uniforms = Uniforms {
-    texture: glium::uniforms::Sampler(&tex, glium::uniforms::SamplerBehavior {
-        wrap_function: (
-            glium::uniforms::Repeat,
-            glium::uniforms::Repeat,
-            glium::uniforms::Repeat
-        ),
-        minify_filter: glium::uniforms::Linear,
-        .. std::default::Default::default()
-    }),
-    matrix: matrix,
-};
-# }
-```
-
-
 */
-
 use {gl, context, texture};
 //use cgmath;
-//use nalgebra;
+use nalgebra;
+
 use std::sync::Arc;
+
+use GlObject;
 
 /// Represents a value that can be used as the value of a uniform.
 ///
@@ -93,7 +56,62 @@ pub trait UniformValue {
 /// The proc takes as parameter the `Gl` object, the binding location, and a `&mut GLenum` that
 ///  represents the current value of `glActiveTexture`.
 /// It must call `glUniform*`.
-pub struct UniformValueBinder(proc(&mut context::CommandContext, gl::types::GLint, &mut gl::types::GLenum):Send);
+pub struct UniformValueBinder(UniformValueBinderImpl);
+
+impl UniformValueBinder {
+    unsafe fn bind(&self, ctxt: &mut context::CommandContext, location: gl::types::GLint,
+                   active_texture: &mut gl::types::GLenum)
+    {
+        match self.0 {
+            UniformValueBinderImpl::SignedInt(val) => {
+                ctxt.gl.Uniform1i(location, val)
+            },
+            UniformValueBinderImpl::UnsignedInt(val) => {
+                ctxt.gl.Uniform1ui(location, val)
+            },
+            UniformValueBinderImpl::Float(val) => {
+                ctxt.gl.Uniform1f(location, val)
+            },
+            UniformValueBinderImpl::Mat2(val) => {
+                ctxt.gl.UniformMatrix2fv(location, 1, 0, val.as_ptr() as *const f32)
+            },
+            UniformValueBinderImpl::Mat3(val) => {
+                ctxt.gl.UniformMatrix3fv(location, 1, 0, val.as_ptr() as *const f32)
+            },
+            UniformValueBinderImpl::Mat4(val) => {
+                ctxt.gl.UniformMatrix4fv(location, 1, 0, val.as_ptr() as *const f32)
+            },
+            UniformValueBinderImpl::Vec2(val) => {
+                ctxt.gl.Uniform2fv(location, 1, val.as_ptr() as *const f32)
+            },
+            UniformValueBinderImpl::Vec3(val) => {
+                ctxt.gl.Uniform3fv(location, 1, val.as_ptr() as *const f32)
+            },
+            UniformValueBinderImpl::Vec4(val) => {
+                ctxt.gl.Uniform4fv(location, 1, val.as_ptr() as *const f32)
+            },
+            UniformValueBinderImpl::Texture(id) => {
+                ctxt.gl.ActiveTexture(*active_texture as u32);
+                ctxt.gl.BindTexture(gl::TEXTURE_2D, id);      // FIXME: check bind point
+                ctxt.gl.Uniform1i(location, (*active_texture - gl::TEXTURE0) as gl::types::GLint);
+                *active_texture += 1;
+            }
+        }
+    }
+}
+
+enum UniformValueBinderImpl {
+    SignedInt(gl::types::GLint),
+    UnsignedInt(gl::types::GLuint),
+    Float(f32),
+    Mat2([[f32, ..2], ..2]),
+    Mat3([[f32, ..3], ..3]),
+    Mat4([[f32, ..4], ..4]),
+    Vec2([f32, ..2]),
+    Vec3([f32, ..3]),
+    Vec4([f32, ..4]),
+    Texture(gl::types::GLuint),
+}
 
 /// Object that contains all the uniforms of a program with their bindings points.
 ///
@@ -107,11 +125,12 @@ pub trait Uniforms {
 }
 
 /// Object that can be used when you don't have any uniform.
+#[deriving(Show, Copy, Clone)]
 pub struct EmptyUniforms;
 
 impl Uniforms for EmptyUniforms {
     fn to_binder(&self) -> UniformsBinder {
-        UniformsBinder(proc(_, _, _) {})
+        UniformsBinder(box move |_, _, _| {})
     }
 }
 
@@ -157,15 +176,15 @@ impl<'a, T, R> UniformsStorage<'a, T, R> {
 impl<'a, T, R> Uniforms for UniformsStorage<'a, T, R> where T: UniformValue, R: Uniforms {
     fn to_binder(&self) -> UniformsBinder {
         let name = self.0.to_string();
-        let value_binder = self.1.to_binder().0;
+        let value = self.1.to_binder();
         let rest = self.2.to_binder().0;
 
-        UniformsBinder(proc(ctxt, symbols, active_texture) {
-            if let Some(loc) = symbols(name.as_slice()) {
-                value_binder(ctxt, loc, active_texture);
+        UniformsBinder(box move |ctxt, symbols, active_texture| {
+            if let Some(loc) = symbols.call((name.as_slice(),)) {
+                unsafe { value.bind(ctxt, loc, active_texture) };
             }   // note: ignoring if the uniform was not found in the program
 
-            rest(ctxt, symbols, active_texture);
+            rest.call((ctxt, symbols, active_texture));
         })
     }
 }
@@ -174,14 +193,14 @@ impl<'a, T, R> Uniforms for UniformsStorage<'a, T, R> where T: UniformValue, R: 
 // The field is "pub" because of framebuffer.
 // TODO: remove this hack
 #[doc(hidden)]
-pub struct UniformsBinder(pub proc(&mut context::CommandContext, |&str| -> Option<gl::types::GLint>,
-                          &mut gl::types::GLenum):Send);
+pub struct UniformsBinder(pub Box<Fn(&mut context::CommandContext, Box<Fn(&str) -> Option<gl::types::GLint>>,
+                          &mut gl::types::GLenum)+Send>);
 
 
 /// Function to use for out-of-bounds samples.
 ///
 /// This is how GL must handle samples that are outside the texture.
-#[deriving(Show, Clone, Hash, PartialEq, Eq)]
+#[deriving(Show, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum SamplerWrapFunction {
     /// Samples at coord `x + 1` are mapped to coord `x`.
     Repeat,
@@ -204,7 +223,7 @@ impl SamplerWrapFunction {
 }
 
 /// The function that the GPU will use when loading the value of a texel.
-#[deriving(Show, Clone, Hash, PartialEq, Eq)]
+#[deriving(Show, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum SamplerFilter {
     /// The nearest texel will be loaded.
     Nearest,
@@ -236,7 +255,7 @@ impl<'t, T: texture::Texture + 't> UniformValue for Sampler<'t, T> {
 /// Behavior of a sampler.
 // TODO: GL_TEXTURE_BORDER_COLOR, GL_TEXTURE_MIN_LOD, GL_TEXTURE_MAX_LOD, GL_TEXTURE_LOD_BIAS,
 //       GL_TEXTURE_COMPARE_MODE, GL_TEXTURE_COMPARE_FUNC
-#[deriving(Show, Clone, Hash, PartialEq, Eq)]
+#[deriving(Show, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct SamplerBehavior {
     /// Functions to use for the X, Y, and Z coordinates.
     pub wrap_function: (SamplerWrapFunction, SamplerWrapFunction, SamplerWrapFunction),
@@ -271,7 +290,7 @@ impl SamplerObject {
     pub fn new(display: &super::Display) -> SamplerObject {
         let (tx, rx) = channel();
 
-        display.context.context.exec(proc(ctxt) {
+        display.context.context.exec(move |: ctxt| {
             let sampler = unsafe {
                 use std::mem;
                 let mut sampler: gl::types::GLuint = mem::uninitialized();
@@ -290,7 +309,7 @@ impl SamplerObject {
 
     pub fn bind(&self, gl: gl::Gl, sampler: SamplerBehavior) {
         let id = self.id;
-        self.display.context.exec(proc(ctxt) {
+        self.display.context.exec(move |: ctxt| {
             unsafe {
                 ctxt.gl.SamplerParameteri(id, gl::TEXTURE_WRAP_S,
                     sampler.wrap_function.0.to_glenum() as gl::types::GLint);
@@ -314,7 +333,7 @@ impl SamplerObject {
 impl Drop for SamplerObject {
     fn drop(&mut self) {
         let id = self.id;
-        self.display.context.exec(proc(ctxt) {
+        self.display.context.exec(move |: ctxt| {
             unsafe {
                 ctxt.gl.DeleteSamplers(1, [id].as_ptr());
             }
@@ -325,235 +344,232 @@ impl Drop for SamplerObject {
 
 impl UniformValue for i8 {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.clone();
-        UniformValueBinder(proc(ctxt, location, _) {
-            unsafe {
-                ctxt.gl.Uniform1i(location, my_value as gl::types::GLint)
-            }
-        })
+        UniformValueBinder(UniformValueBinderImpl::SignedInt(*self as gl::types::GLint))
     }
 }
 
 impl UniformValue for u8 {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.clone();
-        UniformValueBinder(proc(ctxt, location, _) {
-            unsafe {
-                ctxt.gl.Uniform1ui(location, my_value as gl::types::GLuint)
-            }
-        })
+        UniformValueBinder(UniformValueBinderImpl::UnsignedInt(*self as gl::types::GLuint))
     }
 }
 
 impl UniformValue for i16 {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.clone();
-        UniformValueBinder(proc(ctxt, location, _) {
-            unsafe {
-                ctxt.gl.Uniform1i(location, my_value as gl::types::GLint)
-            }
-        })
+        UniformValueBinder(UniformValueBinderImpl::SignedInt(*self as gl::types::GLint))
     }
 }
 
 impl UniformValue for u16 {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.clone();
-        UniformValueBinder(proc(ctxt, location, _) {
-            unsafe {
-                ctxt.gl.Uniform1ui(location, my_value as gl::types::GLuint)
-            }
-        })
+        UniformValueBinder(UniformValueBinderImpl::UnsignedInt(*self as gl::types::GLuint))
     }
 }
 
 impl UniformValue for i32 {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.clone();
-        UniformValueBinder(proc(ctxt, location, _) {
-            unsafe {
-                ctxt.gl.Uniform1i(location, my_value as gl::types::GLint)
-            }
-        })
+        UniformValueBinder(UniformValueBinderImpl::SignedInt(*self as gl::types::GLint))
     }
 }
 
 impl UniformValue for u32 {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.clone();
-        UniformValueBinder(proc(ctxt, location, _) {
-            unsafe {
-                ctxt.gl.Uniform1ui(location, my_value as gl::types::GLuint)
-            }
-        })
+        UniformValueBinder(UniformValueBinderImpl::UnsignedInt(*self as gl::types::GLuint))
     }
 }
 
 impl UniformValue for f32 {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.clone();
-        UniformValueBinder(proc(ctxt, location, _) {
-            unsafe {
-                ctxt.gl.Uniform1f(location, my_value)
-            }
-        })
+        UniformValueBinder(UniformValueBinderImpl::Float(*self))
     }
 }
 
 impl UniformValue for [[f32, ..2], ..2] {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = *self;
-        UniformValueBinder(proc(ctxt, location, _) {
-            unsafe { ctxt.gl.UniformMatrix2fv(location, 1, 0, my_value.as_ptr() as *const f32) }
-        })
+        UniformValueBinder(UniformValueBinderImpl::Mat2(*self))
     }
 }
 
 impl UniformValue for [[f32, ..3], ..3] {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = *self;
-        UniformValueBinder(proc(ctxt, location, _) {
-            unsafe { ctxt.gl.UniformMatrix3fv(location, 1, 0, my_value.as_ptr() as *const f32) }
-        })
+        UniformValueBinder(UniformValueBinderImpl::Mat3(*self))
     }
 }
 
 impl UniformValue for [[f32, ..4], ..4] {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = *self;
-        UniformValueBinder(proc(ctxt, location, _) {
-            unsafe { ctxt.gl.UniformMatrix4fv(location, 1, 0, my_value.as_ptr() as *const f32) }
-        })
+        UniformValueBinder(UniformValueBinderImpl::Mat4(*self))
     }
 }
 
 impl UniformValue for (f32, f32) {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.clone();
-        UniformValueBinder(proc(ctxt, location, _) {
-            let my_value = [ my_value.0, my_value.1 ];
-            unsafe { ctxt.gl.Uniform2fv(location, 1, my_value.as_ptr() as *const f32) }
-        })
+        UniformValueBinder(UniformValueBinderImpl::Vec2([self.0, self.1]))
     }
 }
 
 impl UniformValue for (f32, f32, f32) {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.clone();
-        UniformValueBinder(proc(ctxt, location, _) {
-            let my_value = [ my_value.0, my_value.1, my_value.2 ];
-            unsafe { ctxt.gl.Uniform3fv(location, 1, my_value.as_ptr() as *const f32) }
-        })
+        UniformValueBinder(UniformValueBinderImpl::Vec3([self.0, self.1, self.2]))
     }
 }
 
 impl UniformValue for (f32, f32, f32, f32) {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.clone();
-        UniformValueBinder(proc(ctxt, location, _) {
-            let my_value = [ my_value.0, my_value.1, my_value.2, my_value.3 ];
-            unsafe { ctxt.gl.Uniform4fv(location, 1, my_value.as_ptr() as *const f32) }
-        })
+        UniformValueBinder(UniformValueBinderImpl::Vec4([self.0, self.1, self.2, self.3]))
     }
 }
 
 impl UniformValue for [f32, ..2] {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = *self;
-        UniformValueBinder(proc(ctxt, location, _) {
-            unsafe { ctxt.gl.Uniform2fv(location, 1, my_value.as_ptr() as *const f32) }
-        })
+        UniformValueBinder(UniformValueBinderImpl::Vec2(*self))
     }
 }
 
 impl UniformValue for [f32, ..3] {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = *self;
-        UniformValueBinder(proc(ctxt, location, _) {
-            unsafe { ctxt.gl.Uniform3fv(location, 1, my_value.as_ptr() as *const f32) }
-        })
+        UniformValueBinder(UniformValueBinderImpl::Vec3(*self))
     }
 }
 
 impl UniformValue for [f32, ..4] {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = *self;
-        UniformValueBinder(proc(ctxt, location, _) {
-            unsafe { ctxt.gl.Uniform4fv(location, 1, my_value.as_ptr() as *const f32) }
-        })
+        UniformValueBinder(UniformValueBinderImpl::Vec4(*self))
     }
 }
 
 impl<'a> UniformValue for &'a texture::TextureImplementation {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_id = texture::get_id(*self);
-        UniformValueBinder(proc(ctxt, location, active_texture) {
-            unsafe {
-                ctxt.gl.ActiveTexture(*active_texture as u32);
-                ctxt.gl.BindTexture(gl::TEXTURE_2D, my_id);      // FIXME: check bind point
-                ctxt.gl.Uniform1i(location, (*active_texture - gl::TEXTURE0) as gl::types::GLint);
-                *active_texture += 1;
-            }
-        })
+        UniformValueBinder(UniformValueBinderImpl::Texture(self.get_id()))
     }
 }
 
-// TODO: no method to get a slice?
-/*impl UniformValue for nalgebra::na::Vec1<f32> {
+impl UniformValue for nalgebra::Mat2<f32> {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.into_fixed();
+        let my_value = self.as_array();
         my_value.to_binder()
     }
 }
 
-impl UniformValue for nalgebra::na::Vec2<f32> {
+impl UniformValue for nalgebra::Mat3<f32> {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.into_fixed();
+        let my_value = self.as_array();
         my_value.to_binder()
     }
 }
 
-impl UniformValue for nalgebra::na::Vec3<f32> {
+impl UniformValue for nalgebra::Mat4<f32> {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.into_fixed();
+        let my_value = self.as_array();
         my_value.to_binder()
     }
 }
 
-impl UniformValue for nalgebra::na::Vec4<f32> {
+impl UniformValue for nalgebra::Ortho3<f32> {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.into_fixed();
+        let my_value = self.to_mat(); // Bind to a Mat4
         my_value.to_binder()
     }
 }
 
-impl UniformValue for nalgebra::na::Mat1<f32> {
+impl UniformValue for nalgebra::OrthoMat3<f32> {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.into_fixed();
+        let my_value = self.as_mat(); // Bind to a Mat4
         my_value.to_binder()
     }
 }
 
-impl UniformValue for nalgebra::na::Mat2<f32> {
+impl UniformValue for nalgebra::Persp3<f32> {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.into_fixed();
+        let my_value = self.to_mat(); // Bind to a Mat4
         my_value.to_binder()
     }
 }
 
-impl UniformValue for nalgebra::na::Mat3<f32> {
+impl UniformValue for nalgebra::PerspMat3<f32> {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.into_fixed();
+        let my_value = self.as_mat(); // Bind to a Mat4
         my_value.to_binder()
     }
 }
 
-impl UniformValue for nalgebra::na::Mat4<f32> {
+impl UniformValue for nalgebra::Pnt2<f32> {
     fn to_binder(&self) -> UniformValueBinder {
-        let my_value = self.into_fixed();
+        let my_value = self.as_array();
         my_value.to_binder()
     }
-}*/
+}
+
+impl UniformValue for nalgebra::Pnt3<f32> {
+    fn to_binder(&self) -> UniformValueBinder {
+        let my_value = self.as_array();
+        my_value.to_binder()
+    }
+}
+
+impl UniformValue for nalgebra::Pnt4<f32> {
+    fn to_binder(&self) -> UniformValueBinder {
+        let my_value = self.as_array();
+        my_value.to_binder()
+    }
+}
+
+impl UniformValue for nalgebra::Quat<f32> {
+    fn to_binder(&self) -> UniformValueBinder {
+        let my_value = self.as_array();
+        my_value.to_binder()
+    }
+}
+
+impl UniformValue for nalgebra::Rot2<f32> {
+    fn to_binder(&self) -> UniformValueBinder {
+        let my_value = self.submat(); // Bind to a Mat2
+        my_value.to_binder()
+    }
+}
+
+impl UniformValue for nalgebra::Rot3<f32> {
+    fn to_binder(&self) -> UniformValueBinder {
+        let my_value = self.submat(); // Bind to a Mat3
+        my_value.to_binder()
+    }
+}
+
+impl UniformValue for nalgebra::Rot4<f32> {
+    fn to_binder(&self) -> UniformValueBinder {
+        let my_value = self.submat(); // Bind to a Mat4
+        my_value.to_binder()
+    }
+}
+
+impl UniformValue for nalgebra::UnitQuat<f32> {
+    fn to_binder(&self) -> UniformValueBinder {
+        let my_value = self.quat(); // Bind to a Quat
+        my_value.to_binder()
+    }
+}
+
+impl UniformValue for nalgebra::Vec2<f32> {
+    fn to_binder(&self) -> UniformValueBinder {
+        let my_value = self.as_array();
+        my_value.to_binder()
+    }
+}
+
+impl UniformValue for nalgebra::Vec3<f32> {
+    fn to_binder(&self) -> UniformValueBinder {
+        let my_value = self.as_array();
+        my_value.to_binder()
+    }
+}
+
+impl UniformValue for nalgebra::Vec4<f32> {
+    fn to_binder(&self) -> UniformValueBinder {
+        let my_value = self.as_array();
+        my_value.to_binder()
+    }
+}
+
 
 /*impl UniformValue for cgmath::Matrix2<f32> {
     fn to_binder(&self) -> UniformValueBinder {

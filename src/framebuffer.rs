@@ -2,7 +2,7 @@ use std::kinds::marker::ContravariantLifetime;
 use std::mem;
 use std::sync::Arc;
 
-use texture::{mod, Texture, Texture2d};
+use texture::{Texture, Texture2d};
 use uniforms::Uniforms;
 use {DisplayImpl, VertexBuffer, Program, DrawParameters, Rect, Surface, GlObject};
 use IndicesSource;
@@ -32,7 +32,7 @@ pub struct FrameBuffer<'a> {
 
 impl<'a> FrameBuffer<'a> {
     /// Creates an empty framebuffer.
-    pub fn new<'a>(display: &::Display) -> FrameBuffer<'a> {
+    pub fn new(display: &::Display) -> FrameBuffer<'a> {
         FrameBuffer {
             display: display.context.clone(),
             attachments: FramebufferAttachments {
@@ -48,7 +48,7 @@ impl<'a> FrameBuffer<'a> {
     /// Attach an additional texture to this framebuffer.
     pub fn with_color_texture(mut self, texture: &'a Texture2d) -> FrameBuffer<'a> {
         // TODO: check existing dimensions
-        self.attachments.colors.push(texture::get_id(texture.get_implementation()));
+        self.attachments.colors.push(texture.get_implementation().get_id());
         self.dimensions = Some((texture.get_width(), texture.get_height().unwrap_or(1)));
         self
     }
@@ -70,6 +70,14 @@ impl<'a> Surface for FrameBuffer<'a> {
     fn get_dimensions(&self) -> (uint, uint) {
         let dimensions = self.dimensions.expect("no texture was bound to this framebuffer");
         (dimensions.0 as uint, dimensions.1 as uint)
+    }
+
+    fn get_depth_buffer_bits(&self) -> Option<u16> {
+        None
+    }
+
+    fn get_stencil_buffer_bits(&self) -> Option<u16> {
+        None
     }
 
     fn draw<V, I, U>(&mut self, vb: &::VertexBuffer<V>, ib: &I, program: &::Program,
@@ -103,7 +111,7 @@ impl FrameBufferObject {
     fn new(display: Arc<DisplayImpl>) -> FrameBufferObject {
         let (tx, rx) = channel();
 
-        display.context.exec(proc(ctxt) {
+        display.context.exec(move |: ctxt| {
             unsafe {
                 let id: gl::types::GLuint = mem::uninitialized();
                 if ctxt.version >= &context::GlVersion(3, 0) {
@@ -126,29 +134,29 @@ impl FrameBufferObject {
 impl Drop for FrameBufferObject {
     fn drop(&mut self) {
         let id = self.id.clone();
-        self.display.context.exec(proc(ctxt) {
+        self.display.context.exec(move |: ctxt| {
             unsafe {
                 // unbinding framebuffer
                 if ctxt.version >= &context::GlVersion(3, 0) {
-                    if ctxt.state.draw_framebuffer == Some(id) && ctxt.state.read_framebuffer == Some(id) {
+                    if ctxt.state.draw_framebuffer == id && ctxt.state.read_framebuffer == id {
                         ctxt.gl.BindFramebuffer(gl::FRAMEBUFFER, 0);
-                        ctxt.state.draw_framebuffer = None;
-                        ctxt.state.read_framebuffer = None;
+                        ctxt.state.draw_framebuffer = 0;
+                        ctxt.state.read_framebuffer = 0;
 
-                    } else if ctxt.state.draw_framebuffer == Some(id) {
+                    } else if ctxt.state.draw_framebuffer == id {
                         ctxt.gl.BindFramebuffer(gl::DRAW_FRAMEBUFFER, 0);
-                        ctxt.state.draw_framebuffer = None;
+                        ctxt.state.draw_framebuffer = 0;
 
-                    } else if ctxt.state.read_framebuffer == Some(id) {
+                    } else if ctxt.state.read_framebuffer == id {
                         ctxt.gl.BindFramebuffer(gl::READ_FRAMEBUFFER, 0);
-                        ctxt.state.read_framebuffer = None;
+                        ctxt.state.read_framebuffer = 0;
                     }
 
                 } else {
-                    if ctxt.state.draw_framebuffer == Some(id) || ctxt.state.read_framebuffer == Some(id) {
+                    if ctxt.state.draw_framebuffer == id || ctxt.state.read_framebuffer == id {
                         ctxt.gl.BindFramebufferEXT(gl::FRAMEBUFFER_EXT, 0);
-                        ctxt.state.draw_framebuffer = None;
-                        ctxt.state.read_framebuffer = None;
+                        ctxt.state.draw_framebuffer = 0;
+                        ctxt.state.read_framebuffer = 0;
                     }
                 }
 
@@ -177,19 +185,21 @@ pub fn draw<V, I, U>(display: &Arc<DisplayImpl>,
 {
     let fbo_id = get_framebuffer(display, framebuffer);
 
-    let draw_cmd = indices.to_indices_source_helper().0;
+    let vao_id = vertex_array_object::get_vertex_array_object(display, vertex_buffer, indices,
+                                                              program);
 
-    let program_id = program.get_id();
+    let ::IndicesSourceHelper { pointer, primitives, data_type,
+                                indices_count, .. } = indices.to_indices_source_helper();
+    let pointer = pointer.unwrap_or(::std::ptr::null());
+
     let uniforms = uniforms.to_binder();
     let uniforms_locations = program::get_uniforms_locations(program);
     let draw_parameters = draw_parameters.clone();
 
-    let vao_id = vertex_array_object::get_vertex_array_object(display, vertex_buffer, program_id);
     let vb_id = vertex_buffer.get_id();
+    let program_id = program.get_id();
 
-    let (tx, rx) = channel();
-
-    display.context.exec(proc(mut ctxt) {
+    display.context.exec(move |: mut ctxt| {
         unsafe {
             bind_framebuffer(&mut ctxt, fbo_id, true, false);
 
@@ -201,11 +211,11 @@ pub fn draw<V, I, U>(display: &Arc<DisplayImpl>,
 
             // binding program uniforms
             let mut active_texture = gl::TEXTURE0;
-            uniforms.0(&mut ctxt, |name| {
+            uniforms.0.call((&mut ctxt, box |&: name| {
                 uniforms_locations
                     .get(name)
-                    .map(|val| val.0)
-            }, &mut active_texture);
+                    .map(|val| val.location)
+            }, &mut active_texture));
 
             // binding VAO
             if ctxt.state.vertex_array != vao_id {
@@ -214,24 +224,18 @@ pub fn draw<V, I, U>(display: &Arc<DisplayImpl>,
             }
 
             // binding vertex buffer
-            if ctxt.state.array_buffer_binding != Some(vb_id) {
+            if ctxt.state.array_buffer_binding != vb_id {
                 ctxt.gl.BindBuffer(gl::ARRAY_BUFFER, vb_id);
-                ctxt.state.array_buffer_binding = Some(vb_id);
+                ctxt.state.array_buffer_binding = vb_id;
             }
 
             // sync-ing parameters
             draw_parameters.sync(&mut ctxt);
-            
+
             // drawing
-            draw_cmd(&mut ctxt);
+            ctxt.gl.DrawElements(primitives, indices_count as i32, data_type, pointer);
         }
-
-        tx.send(());
     });
-
-    // synchronizing with the end of the draw
-    // TODO: remove that after making sure that everything is ok
-    rx.recv();
 }
 
 pub fn clear_color(display: &Arc<DisplayImpl>, framebuffer: Option<&FramebufferAttachments>,
@@ -246,7 +250,7 @@ pub fn clear_color(display: &Arc<DisplayImpl>, framebuffer: Option<&FramebufferA
         alpha as gl::types::GLclampf
     );
 
-    display.context.exec(proc(mut ctxt) {
+    display.context.exec(move |: mut ctxt| {
         bind_framebuffer(&mut ctxt, fbo_id, true, false);
 
         unsafe {
@@ -266,7 +270,7 @@ pub fn clear_depth(display: &Arc<DisplayImpl>, framebuffer: Option<&FramebufferA
     let value = value as gl::types::GLclampf;
     let fbo_id = get_framebuffer(display, framebuffer);
 
-    display.context.exec(proc(mut ctxt) {
+    display.context.exec(move |: mut ctxt| {
         bind_framebuffer(&mut ctxt, fbo_id, true, false);
 
         unsafe {
@@ -286,7 +290,7 @@ pub fn clear_stencil(display: &Arc<DisplayImpl>, framebuffer: Option<&Framebuffe
     let value = value as gl::types::GLint;
     let fbo_id = get_framebuffer(display, framebuffer);
 
-    display.context.exec(proc(mut ctxt) {
+    display.context.exec(move |: mut ctxt| {
         bind_framebuffer(&mut ctxt, fbo_id, true, false);
 
         unsafe {
@@ -312,7 +316,7 @@ pub fn blit<S1: Surface, S2: Surface>(source: &S1, target: &S2, mask: gl::types:
     let source = get_framebuffer(display, source);
     let target = get_framebuffer(display, target);
 
-    display.context.exec(proc(ctxt) {
+    display.context.exec(move |: ctxt| {
         unsafe {
             // trying to do a named blit if possible
             if ctxt.version >= &context::GlVersion(4, 5) {
@@ -329,26 +333,26 @@ pub fn blit<S1: Surface, S2: Surface>(source: &S1, target: &S2, mask: gl::types:
             }
 
             // binding source framebuffer
-            if ctxt.state.read_framebuffer != source {
+            if ctxt.state.read_framebuffer != source.unwrap_or(0) {
                 if ctxt.version >= &context::GlVersion(3, 0) {
                     ctxt.gl.BindFramebuffer(gl::READ_FRAMEBUFFER, source.unwrap_or(0));
-                    ctxt.state.read_framebuffer = source;
+                    ctxt.state.read_framebuffer = source.unwrap_or(0);
 
                 } else {
                     ctxt.gl.BindFramebufferEXT(gl::READ_FRAMEBUFFER_EXT, source.unwrap_or(0));
-                    ctxt.state.read_framebuffer = source;
+                    ctxt.state.read_framebuffer = source.unwrap_or(0);
                 }
             }
 
             // binding target framebuffer
-            if ctxt.state.draw_framebuffer != target {
+            if ctxt.state.draw_framebuffer != target.unwrap_or(0) {
                 if ctxt.version >= &context::GlVersion(3, 0) {
                     ctxt.gl.BindFramebuffer(gl::DRAW_FRAMEBUFFER, target.unwrap_or(0));
-                    ctxt.state.draw_framebuffer = target;
+                    ctxt.state.draw_framebuffer = target.unwrap_or(0);
 
                 } else {
                     ctxt.gl.BindFramebufferEXT(gl::DRAW_FRAMEBUFFER_EXT, target.unwrap_or(0));
-                    ctxt.state.draw_framebuffer = target;
+                    ctxt.state.draw_framebuffer = target.unwrap_or(0);
                 }
             }
 
@@ -409,7 +413,7 @@ fn initialize_fbo(display: &Arc<DisplayImpl>, fbo: &mut FrameBufferObject,
     for (slot, texture) in content.colors.iter().enumerate() {
         let tex_id = texture.clone();
 
-        display.context.exec(proc(mut ctxt) {
+        display.context.exec(move |: mut ctxt| {
             unsafe {
                 if ctxt.version >= &GlVersion(4, 5) {
                     ctxt.gl.NamedFramebufferTexture(fbo_id, gl::COLOR_ATTACHMENT0 + slot as u32,
@@ -444,15 +448,17 @@ fn initialize_fbo(display: &Arc<DisplayImpl>, fbo: &mut FrameBufferObject,
 fn bind_framebuffer(ctxt: &mut context::CommandContext, fbo_id: Option<gl::types::GLuint>,
                     draw: bool, read: bool)
 {
+    let fbo_id = fbo_id.unwrap_or(0);
+
     if draw && ctxt.state.draw_framebuffer != fbo_id {
         unsafe {
             if ctxt.version >= &context::GlVersion(3, 0) {
-                ctxt.gl.BindFramebuffer(gl::DRAW_FRAMEBUFFER, fbo_id.unwrap_or(0));
-                ctxt.state.draw_framebuffer = fbo_id.clone();
+                ctxt.gl.BindFramebuffer(gl::DRAW_FRAMEBUFFER, fbo_id);
+                ctxt.state.draw_framebuffer = fbo_id;
             } else {
-                ctxt.gl.BindFramebufferEXT(gl::FRAMEBUFFER_EXT, fbo_id.unwrap_or(0));
-                ctxt.state.draw_framebuffer = fbo_id.clone();
-                ctxt.state.read_framebuffer = fbo_id.clone();
+                ctxt.gl.BindFramebufferEXT(gl::FRAMEBUFFER_EXT, fbo_id);
+                ctxt.state.draw_framebuffer = fbo_id;
+                ctxt.state.read_framebuffer = fbo_id;
             }
         }
     }
@@ -460,12 +466,12 @@ fn bind_framebuffer(ctxt: &mut context::CommandContext, fbo_id: Option<gl::types
     if read && ctxt.state.read_framebuffer != fbo_id {
         unsafe {
             if ctxt.version >= &context::GlVersion(3, 0) {
-                ctxt.gl.BindFramebuffer(gl::READ_FRAMEBUFFER, fbo_id.unwrap_or(0));
-                ctxt.state.read_framebuffer = fbo_id.clone();
+                ctxt.gl.BindFramebuffer(gl::READ_FRAMEBUFFER, fbo_id);
+                ctxt.state.read_framebuffer = fbo_id;
             } else {
-                ctxt.gl.BindFramebufferEXT(gl::FRAMEBUFFER_EXT, fbo_id.unwrap_or(0));
-                ctxt.state.draw_framebuffer = fbo_id.clone();
-                ctxt.state.read_framebuffer = fbo_id.clone();
+                ctxt.gl.BindFramebufferEXT(gl::FRAMEBUFFER_EXT, fbo_id);
+                ctxt.state.draw_framebuffer = fbo_id;
+                ctxt.state.read_framebuffer = fbo_id;
             }
         }
     }

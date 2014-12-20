@@ -7,12 +7,13 @@ use GlObject;
 pub struct VertexBuffer<T> {
     buffer: Buffer,
     bindings: VertexBindings,
+    elements_size: uint,
 }
 
 /// Don't use this function outside of glium
 #[doc(hidden)]
 pub fn get_elements_size<T>(vb: &VertexBuffer<T>) -> uint {
-    vb.buffer.get_elements_size()
+    vb.elements_size
 }
 
 /// Don't use this function outside of glium
@@ -26,22 +27,21 @@ impl<T: VertexFormat + 'static + Send> VertexBuffer<T> {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```no_run
     /// # #![feature(phase)]
     /// # #[phase(plugin)]
     /// # extern crate glium_macros;
     /// # extern crate glium;
     /// # extern crate glutin;
-    /// # use glium::DisplayBuild;
     /// # fn main() {
     /// #[vertex_format]
+    /// #[deriving(Copy)]
     /// struct Vertex {
     ///     position: [f32, ..3],
     ///     texcoords: [f32, ..2],
     /// }
     ///
-    /// # let display: glium::Display = glutin::HeadlessRendererBuilder::new(1024, 768)
-    /// #   .build_glium().unwrap();
+    /// # let display: glium::Display = unsafe { ::std::mem::uninitialized() };
     /// let vertex_buffer = glium::VertexBuffer::new(&display, vec![
     ///     Vertex { position: [0.0,  0.0, 0.0], texcoords: [0.0, 1.0] },
     ///     Vertex { position: [5.0, -3.0, 2.0], texcoords: [1.0, 0.0] },
@@ -52,9 +52,13 @@ impl<T: VertexFormat + 'static + Send> VertexBuffer<T> {
     pub fn new(display: &super::Display, data: Vec<T>) -> VertexBuffer<T> {
         let bindings = VertexFormat::build_bindings(None::<T>);
 
+        let buffer = Buffer::new::<buffer::ArrayBuffer, T>(display, data, gl::STATIC_DRAW);
+        let elements_size = buffer.get_elements_size();
+
         VertexBuffer {
-            buffer: Buffer::new::<buffer::ArrayBuffer, T>(display, data, gl::STATIC_DRAW),
+            buffer: buffer,
             bindings: bindings,
+            elements_size: elements_size,
         }
     }
 
@@ -65,9 +69,62 @@ impl<T: VertexFormat + 'static + Send> VertexBuffer<T> {
     pub fn new_dynamic(display: &super::Display, data: Vec<T>) -> VertexBuffer<T> {
         let bindings = VertexFormat::build_bindings(None::<T>);
 
+        let buffer = Buffer::new::<buffer::ArrayBuffer, T>(display, data, gl::DYNAMIC_DRAW);
+        let elements_size = buffer.get_elements_size();
+
         VertexBuffer {
-            buffer: Buffer::new::<buffer::ArrayBuffer, T>(display, data, gl::DYNAMIC_DRAW),
+            buffer: buffer,
             bindings: bindings,
+            elements_size: elements_size,
+        }
+    }
+}
+
+impl<T: Send + Copy> VertexBuffer<T> {
+    /// Builds a new vertex buffer from an undeterminate data type and bindings.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # #![feature(phase)]
+    /// # #[phase(plugin)]
+    /// # extern crate glium_macros;
+    /// # extern crate glium;
+    /// # extern crate glutin;
+    /// # fn main() {
+    /// let bindings = vec![
+    ///     ("position".to_string(), glium::vertex_buffer::VertexAttrib {
+    ///         offset: 0,
+    ///         data_type: 0x1406,  // GL_FLOAT
+    ///         elements_count: 2,
+    ///     }),
+    ///     ("color".to_string(), glium::vertex_buffer::VertexAttrib {
+    ///         offset: 2 * ::std::mem::size_of::<f32>(),
+    ///         data_type: 0x1406,  // GL_FLOAT
+    ///         elements_count: 1,
+    ///     }),
+    /// ];
+    ///
+    /// # let display: glium::Display = unsafe { ::std::mem::uninitialized() };
+    /// let data = vec![
+    ///     1.0, -0.3, 409.0,
+    ///     -0.4, 2.8, 715.0f32
+    /// ];
+    ///
+    /// let vertex_buffer = unsafe {
+    ///     glium::VertexBuffer::new_raw(&display, data, bindings, 3 * ::std::mem::size_of::<f32>())
+    /// };
+    /// # }
+    /// ```
+    ///
+    #[experimental]
+    pub unsafe fn new_raw(display: &super::Display, data: Vec<T>,
+                          bindings: VertexBindings, elements_size: uint) -> VertexBuffer<T>
+    {
+        VertexBuffer {
+            buffer: Buffer::new::<buffer::ArrayBuffer, T>(display, data, gl::STATIC_DRAW),
+            bindings: bindings,
+            elements_size: elements_size,
         }
     }
 
@@ -138,7 +195,7 @@ impl<T> Drop for VertexBuffer<T> {
     fn drop(&mut self) {
         // removing VAOs which contain this vertex buffer
         let mut vaos = self.buffer.get_display().vertex_array_objects.lock();
-        let to_delete = vaos.keys().filter(|&&(v, _)| v == self.buffer.get_id())
+        let to_delete = vaos.keys().filter(|&&(v, _, _)| v == self.buffer.get_id())
             .map(|k| k.clone()).collect::<Vec<_>>();
         for k in to_delete.into_iter() {
             vaos.remove(&k);
@@ -157,7 +214,7 @@ impl<T> GlObject for VertexBuffer<T> {
 /// When you create a vertex buffer, you need to pass some sort of array of data. In order for
 /// OpenGL to use this data, we must tell it some informations about each field of each
 /// element. This structure describes one such field.
-#[deriving(Show, Clone)]
+#[deriving(Show, Clone, Copy)]
 pub struct VertexAttrib {
     /// The offset, in bytes, between the start of each vertex and the attribute.
     pub offset: uint,

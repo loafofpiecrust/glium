@@ -18,7 +18,7 @@ pub struct Buffer {
 pub trait BufferType {
     /// Should return `&mut ctxt.state.something`.
     fn get_storage_point(Option<Self>, &mut context::GLState)
-        -> &mut Option<gl::types::GLuint>;
+        -> &mut gl::types::GLuint;
     /// Should return `gl::SOMETHING_BUFFER`.
     fn get_bind_point(Option<Self>) -> gl::types::GLenum;
 }
@@ -28,7 +28,7 @@ pub struct ArrayBuffer;
 
 impl BufferType for ArrayBuffer {
     fn get_storage_point(_: Option<ArrayBuffer>, state: &mut context::GLState)
-        -> &mut Option<gl::types::GLuint>
+        -> &mut gl::types::GLuint
     {
         &mut state.array_buffer_binding
     }
@@ -38,27 +38,12 @@ impl BufferType for ArrayBuffer {
     }
 }
 
-/// Used for index buffers.
-pub struct ElementArrayBuffer;
-
-impl BufferType for ElementArrayBuffer {
-    fn get_storage_point(_: Option<ElementArrayBuffer>, state: &mut context::GLState)
-        -> &mut Option<gl::types::GLuint>
-    {
-        &mut state.element_array_buffer_binding
-    }
-
-    fn get_bind_point(_: Option<ElementArrayBuffer>) -> gl::types::GLenum {
-        gl::ELEMENT_ARRAY_BUFFER
-    }
-}
-
 /// Used for pixel buffers.
 pub struct PixelPackBuffer;
 
 impl BufferType for PixelPackBuffer {
     fn get_storage_point(_: Option<PixelPackBuffer>, state: &mut context::GLState)
-        -> &mut Option<gl::types::GLuint>
+        -> &mut gl::types::GLuint
     {
         &mut state.pixel_pack_buffer_binding
     }
@@ -73,7 +58,7 @@ pub struct PixelUnpackBuffer;
 
 impl BufferType for PixelUnpackBuffer {
     fn get_storage_point(_: Option<PixelUnpackBuffer>, state: &mut context::GLState)
-        -> &mut Option<gl::types::GLuint>
+        -> &mut gl::types::GLuint
     {
         &mut state.pixel_unpack_buffer_binding
     }
@@ -100,7 +85,7 @@ impl Buffer {
 
         let (tx, rx) = channel();
 
-        display.context.context.exec(proc(ctxt) {
+        display.context.context.exec(move |: ctxt| {
             let data = data;
 
             unsafe {
@@ -108,22 +93,19 @@ impl Buffer {
                 ctxt.gl.GenBuffers(1, &mut id);
                 tx.send(id);
 
-                if !ctxt.opengl_es && ctxt.version >= &GlVersion(4, 5) {
-                    ctxt.gl.NamedBufferData(id, buffer_size as gl::types::GLsizei,
-                        data.as_ptr() as *const libc::c_void, usage);
-                        
-                } else if ctxt.extensions.gl_ext_direct_state_access {
-                    ctxt.gl.NamedBufferDataEXT(id, buffer_size as gl::types::GLsizeiptr,
-                        data.as_ptr() as *const libc::c_void, usage);
+                let storage = BufferType::get_storage_point(None::<T>, ctxt.state);
+                let bind = BufferType::get_bind_point(None::<T>);
 
-                } else {
-                    let storage = BufferType::get_storage_point(None::<T>, ctxt.state);
-                    let bind = BufferType::get_bind_point(None::<T>);
+                ctxt.gl.BindBuffer(bind, id);
+                *storage = id;
+                ctxt.gl.BufferData(bind, buffer_size as gl::types::GLsizeiptr,
+                                   data.as_ptr() as *const libc::c_void, usage);
 
-                    ctxt.gl.BindBuffer(bind, id);
-                    *storage = Some(id);
-                    ctxt.gl.BufferData(bind, buffer_size as gl::types::GLsizeiptr,
-                        data.as_ptr() as *const libc::c_void, usage);
+                let mut obtained_size: gl::types::GLint = mem::uninitialized();
+                ctxt.gl.GetBufferParameteriv(bind, gl::BUFFER_SIZE, &mut obtained_size);
+                if buffer_size != obtained_size as uint {
+                    ctxt.gl.DeleteBuffers(1, [id].as_ptr());
+                    panic!("Not enough available memory for buffer");
                 }
             }
         });
@@ -142,25 +124,23 @@ impl Buffer {
         let buffer_size = elements_count * elements_size as uint;
 
         let (tx, rx) = channel();
-        display.context.context.exec(proc(ctxt) {
+        display.context.context.exec(move |: ctxt| {
             unsafe {
                 let mut id: gl::types::GLuint = mem::uninitialized();
                 ctxt.gl.GenBuffers(1, &mut id);
 
-                if !ctxt.opengl_es && ctxt.version >= &GlVersion(4, 5) {
-                    ctxt.gl.NamedBufferData(id, buffer_size as gl::types::GLsizei, ptr::null(), usage);
-                        
-                } else if ctxt.extensions.gl_ext_direct_state_access {
-                    ctxt.gl.NamedBufferDataEXT(id, buffer_size as gl::types::GLsizeiptr, ptr::null(),
-                        usage);
+                let storage = BufferType::get_storage_point(None::<T>, ctxt.state);
+                let bind = BufferType::get_bind_point(None::<T>);
 
-                } else {
-                    let storage = BufferType::get_storage_point(None::<T>, ctxt.state);
-                    let bind = BufferType::get_bind_point(None::<T>);
+                ctxt.gl.BindBuffer(bind, id);
+                *storage = id;
+                ctxt.gl.BufferData(bind, buffer_size as gl::types::GLsizeiptr, ptr::null(), usage);
 
-                    ctxt.gl.BindBuffer(bind, id);
-                    *storage = Some(id);
-                    ctxt.gl.BufferData(bind, buffer_size as gl::types::GLsizeiptr, ptr::null(), usage);
+                let mut obtained_size: gl::types::GLint = mem::uninitialized();
+                ctxt.gl.GetBufferParameteriv(bind, gl::BUFFER_SIZE, &mut obtained_size);
+                if buffer_size != obtained_size as uint {
+                    ctxt.gl.DeleteBuffers(1, [id].as_ptr());
+                    panic!("Not enough available memory for buffer");
                 }
 
                 tx.send(id);
@@ -197,7 +177,7 @@ impl Buffer {
         let id = self.id.clone();
         let elements_count = self.elements_count.clone();
 
-        self.display.context.exec(proc(ctxt) {
+        self.display.context.exec(move |: ctxt| {
             if ctxt.opengl_es {
                 tx.send(Err("OpenGL ES doesn't support glMapBuffer"));
                 return;
@@ -212,7 +192,7 @@ impl Buffer {
                     let bind = BufferType::get_bind_point(None::<T>);
 
                     ctxt.gl.BindBuffer(bind, id);
-                    *storage = Some(id);
+                    *storage = id;
                     ctxt.gl.MapBuffer(bind, gl::READ_WRITE)
                 }
             };
@@ -245,7 +225,7 @@ impl Buffer {
         let elements_size = self.elements_size.clone();
         let (tx, rx) = channel();
 
-        self.display.context.exec(proc(ctxt) {
+        self.display.context.exec(move |: ctxt| {
             if ctxt.opengl_es {
                 panic!("OpenGL ES doesn't support glGetBufferSubData");
             }
@@ -264,7 +244,7 @@ impl Buffer {
                     let bind = BufferType::get_bind_point(None::<T>);
 
                     ctxt.gl.BindBuffer(bind, id);
-                    *storage = Some(id);
+                    *storage = id;
                     ctxt.gl.GetBufferSubData(bind, (offset * elements_size) as gl::types::GLintptr,
                         (size * elements_size) as gl::types::GLsizeiptr,
                         data.as_mut_ptr() as *mut libc::c_void);
@@ -287,21 +267,17 @@ impl fmt::Show for Buffer {
 impl Drop for Buffer {
     fn drop(&mut self) {
         let id = self.id.clone();
-        self.display.context.exec(proc(ctxt) {
-            if ctxt.state.array_buffer_binding == Some(id) {
-                ctxt.state.array_buffer_binding = None;
+        self.display.context.exec(move |: ctxt| {
+            if ctxt.state.array_buffer_binding == id {
+                ctxt.state.array_buffer_binding = 0;
             }
 
-            if ctxt.state.element_array_buffer_binding == Some(id) {
-                ctxt.state.element_array_buffer_binding = None;
+            if ctxt.state.pixel_pack_buffer_binding == id {
+                ctxt.state.pixel_pack_buffer_binding = 0;
             }
 
-            if ctxt.state.pixel_pack_buffer_binding == Some(id) {
-                ctxt.state.pixel_pack_buffer_binding = None;
-            }
-
-            if ctxt.state.pixel_unpack_buffer_binding == Some(id) {
-                ctxt.state.pixel_unpack_buffer_binding = None;
+            if ctxt.state.pixel_unpack_buffer_binding == id {
+                ctxt.state.pixel_unpack_buffer_binding = 0;
             }
 
             unsafe { ctxt.gl.DeleteBuffers(1, [ id ].as_ptr()); }
@@ -355,7 +331,7 @@ pub struct Mapping<'b, T, D> {
 impl<'a, T, D> Drop for Mapping<'a, T, D> where T: BufferType {
     fn drop(&mut self) {
         let id = self.buffer.id.clone();
-        self.buffer.display.context.exec(proc(ctxt) {
+        self.buffer.display.context.exec(move |: ctxt| {
             unsafe {
                 if ctxt.version >= &GlVersion(4, 5) {
                     ctxt.gl.UnmapNamedBuffer(id);
@@ -364,9 +340,9 @@ impl<'a, T, D> Drop for Mapping<'a, T, D> where T: BufferType {
                     let storage = BufferType::get_storage_point(None::<T>, ctxt.state);
                     let bind = BufferType::get_bind_point(None::<T>);
 
-                    if *storage != Some(id) {
+                    if *storage != id {
                         ctxt.gl.BindBuffer(bind, id);
-                        *storage = Some(id);
+                        *storage = id;
                     }
 
                     ctxt.gl.UnmapBuffer(bind);
