@@ -183,6 +183,7 @@ target.finish();
 #![feature(slicing_syntax)]
 #![feature(unboxed_closures)]
 #![feature(unsafe_destructor)]
+#![feature(phase)]
 #![unstable]
 #![warn(missing_docs)]
 
