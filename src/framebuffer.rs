@@ -1,90 +1,231 @@
+/*!
+Framebuffers allows you to customize the color, depth and stencil buffers you will draw on.
+
+In order to draw on a texture, use a `SimpleFrameBuffer`. This framebuffer is compatible with
+shaders that write to `gl_FragColor`.
+
+```no_run
+# let display: glium::Display = unsafe { ::std::mem::uninitialized() };
+# let texture: glium::texture::Texture2d = unsafe { ::std::mem::uninitialized() };
+let framebuffer = glium::framebuffer::SimpleFrameBuffer::new(&display, &texture);
+// framebuffer.draw(...);    // draws over `texture`
+```
+
+Instead if your shader wants to write to multiple color buffers at once, you must use
+a `MultiOutputFrameBuffer`.
+
+```no_run
+# let display: glium::Display = unsafe { ::std::mem::uninitialized() };
+# let texture1: glium::texture::Texture2d = unsafe { ::std::mem::uninitialized() };
+# let texture2: glium::texture::Texture2d = unsafe { ::std::mem::uninitialized() };
+let output = &[ ("output1", &texture1), ("output2", &texture2) ];
+let framebuffer = glium::framebuffer::MultiOutputFrameBuffer::new(&display, output);
+// framebuffer.draw(...);
+
+// example shader:
+// 
+//     out vec4 output1;
+//     out vec4 output2;
+//
+//     void main() {
+//         output1 = vec4(0.0, 0.0, 0.5, 1.0);
+//         output2 = vec4(1.0, 0.7, 1.0, 1.0);
+//     }
+```
+
+**Note**: depth-stencil attachments are not yet implemented.
+
+*/
+#![experimental]
+
 use std::kinds::marker::ContravariantLifetime;
-use std::mem;
 use std::sync::Arc;
 
-use texture::{Texture, Texture2d};
-use uniforms::Uniforms;
-use {DisplayImpl, VertexBuffer, Program, DrawParameters, Rect, Surface, GlObject};
-use IndicesSource;
+use texture::{Texture, Texture2d, DepthTexture2d, StencilTexture2d, DepthStencilTexture2d};
+use fbo::FramebufferAttachments;
 
-use {program, vertex_array_object};
-use {gl, context};
+use {DisplayImpl, Program, Surface, GlObject};
 
-/// A framebuffer that you can use to draw things.
-///
-/// ## Low-level informations
-///
-/// Creating a `FrameBuffer` does **not** immediatly create a FrameBuffer Object. Instead, it is
-/// created when you first use it.
-///
-/// FBOs are stored globally (in the `Display` object), which means that if you create a
-/// `FrameBuffer`, destroy it, and then recreate the exact same `FrameBuffer`, the FBO previously
-/// used will be re-used.
-///
-/// Note that these informations are implementation details and may change in the future.
-///
-pub struct FrameBuffer<'a> {
+use {fbo, gl};
+
+/// A framebuffer which has only one color attachment.
+pub struct SimpleFrameBuffer<'a> {
     display: Arc<DisplayImpl>,
     attachments: FramebufferAttachments,
     marker: ContravariantLifetime<'a>,
-    dimensions: Option<(u32, u32)>,
+    dimensions: (u32, u32),
+    depth_buffer_bits: Option<u16>,
+    stencil_buffer_bits: Option<u16>,
 }
 
-impl<'a> FrameBuffer<'a> {
-    /// Creates an empty framebuffer.
-    pub fn new(display: &::Display) -> FrameBuffer<'a> {
-        FrameBuffer {
+impl<'a> SimpleFrameBuffer<'a> {
+    /// Creates a `SimpleFrameBuffer` with a single color attachment and no depth
+    /// nor stencil buffer.
+    pub fn new<C>(display: &::Display, color: &'a C) -> SimpleFrameBuffer<'a>
+                  where C: ToColorAttachment
+    {
+        use render_buffer;
+
+        SimpleFrameBuffer::new_impl(display, color, None::<&render_buffer::DepthRenderBuffer>,
+                                    None::<&render_buffer::StencilRenderBuffer>)
+    }
+
+    /// Creates a `SimpleFrameBuffer` with a single color attachment and a depth
+    /// buffer, but no stencil buffer.
+    pub fn with_depth_buffer<C, D>(display: &::Display, color: &'a C, depth: &'a D)
+                                   -> SimpleFrameBuffer<'a>
+                                   where C: ToColorAttachment, D: ToDepthAttachment
+    {
+        use render_buffer;
+
+        SimpleFrameBuffer::new_impl(display, color, Some(depth),
+                                    None::<&render_buffer::StencilRenderBuffer>)
+    }
+
+    /// Creates a `SimpleFrameBuffer` with a single color attachment, a depth
+    /// buffer, and a stencil buffer.
+    pub fn with_depth_and_stencil_buffer<C, D, S>(display: &::Display, color: &'a C, depth: &'a D,
+                                                  stencil: &'a S) -> SimpleFrameBuffer<'a>
+                                                  where C: ToColorAttachment, D: ToDepthAttachment,
+                                                  S: ToStencilAttachment
+    {
+        SimpleFrameBuffer::new_impl(display, color, Some(depth), Some(stencil))
+    }
+
+    /// Creates a `SimpleFrameBuffer` with a single color attachment and a stencil
+    /// buffer, but no buffer buffer.
+    pub fn with_stencil_buffer<C, S>(display: &::Display, color: &'a C, stencil: &'a S)
+                                     -> SimpleFrameBuffer<'a>
+                                     where C: ToColorAttachment, S: ToStencilAttachment
+    {
+        use render_buffer;
+
+        SimpleFrameBuffer::new_impl(display, color, None::<&render_buffer::DepthRenderBuffer>,
+                                    Some(stencil))
+    }
+
+
+    fn new_impl<C, D, S>(display: &::Display, color: &'a C, depth: Option<&'a D>,
+                         stencil: Option<&'a S>) -> SimpleFrameBuffer<'a>
+                         where C: ToColorAttachment, D: ToDepthAttachment, S: ToStencilAttachment
+    {
+        let (dimensions, color_attachment) = match color.to_color_attachment() {
+            ColorAttachment::Texture2d(tex) => {
+                let dimensions = (tex.get_width(), tex.get_height().unwrap());
+                let id = fbo::Attachment::Texture(tex.get_id());
+                (dimensions, id)
+            },
+
+            ColorAttachment::RenderBuffer(buffer) => {
+                let dimensions = buffer.get_dimensions();
+                let id = fbo::Attachment::RenderBuffer(buffer.get_id());
+                (dimensions, id)
+            },
+        };
+
+        let (depth, depth_bits) = if let Some(depth) = depth {
+            match depth.to_depth_attachment() {
+                DepthAttachment::Texture2d(tex) => {
+                    if (tex.get_width(), tex.get_height().unwrap()) != dimensions {
+                        panic!("The depth attachment must have the same dimensions \
+                                as the color attachment");
+                    }
+
+                    (Some(fbo::Attachment::Texture(tex.get_id())), Some(32))      // FIXME: wrong number
+                },
+
+                DepthAttachment::RenderBuffer(buffer) => {
+                    // TODO: dimensions
+
+                    (Some(fbo::Attachment::RenderBuffer(buffer.get_id())), Some(32))      // FIXME: wrong number
+                },
+            }
+
+        } else {
+            (None, None)
+        };
+
+        let (stencil, stencil_bits) = if let Some(stencil) = stencil {
+            match stencil.to_stencil_attachment() {
+                StencilAttachment::Texture2d(tex) => {
+                    if (tex.get_width(), tex.get_height().unwrap()) != dimensions {
+                        panic!("The stencil attachment must have the same dimensions \
+                                as the color attachment");
+                    }
+
+                    (Some(fbo::Attachment::Texture(tex.get_id())), Some(8))       // FIXME: wrong number
+                },
+
+                StencilAttachment::RenderBuffer(buffer) => {
+                    // TODO: dimensions
+
+                    (Some(fbo::Attachment::RenderBuffer(buffer.get_id())), Some(8))
+                },
+            }
+
+        } else {
+            (None, None)
+        };
+
+        SimpleFrameBuffer {
             display: display.context.clone(),
             attachments: FramebufferAttachments {
-                colors: Vec::new(),
-                depth: None,
-                stencil: None
+                colors: vec![(0, color_attachment)],
+                depth: depth,
+                stencil: stencil,
             },
             marker: ContravariantLifetime,
-            dimensions: None,
+            dimensions: dimensions,
+            depth_buffer_bits: depth_bits,
+            stencil_buffer_bits: stencil_bits,
         }
-    }
-
-    /// Attach an additional texture to this framebuffer.
-    pub fn with_color_texture(mut self, texture: &'a Texture2d) -> FrameBuffer<'a> {
-        // TODO: check existing dimensions
-        self.attachments.colors.push(texture.get_implementation().get_id());
-        self.dimensions = Some((texture.get_width(), texture.get_height().unwrap_or(1)));
-        self
     }
 }
 
-impl<'a> Surface for FrameBuffer<'a> {
+impl<'a> Surface for SimpleFrameBuffer<'a> {
     fn clear_color(&mut self, red: f32, green: f32, blue: f32, alpha: f32) {
-        clear_color(&self.display, Some(&self.attachments), red, green, blue, alpha)
+        fbo::clear_color(&self.display, Some(&self.attachments), red, green, blue, alpha)
     }
 
     fn clear_depth(&mut self, value: f32) {
-        clear_depth(&self.display, Some(&self.attachments), value)
+        fbo::clear_depth(&self.display, Some(&self.attachments), value)
     }
 
     fn clear_stencil(&mut self, value: int) {
-        clear_stencil(&self.display, Some(&self.attachments), value)
+        fbo::clear_stencil(&self.display, Some(&self.attachments), value)
     }
 
     fn get_dimensions(&self) -> (uint, uint) {
-        let dimensions = self.dimensions.expect("no texture was bound to this framebuffer");
-        (dimensions.0 as uint, dimensions.1 as uint)
+        (self.dimensions.0 as uint, self.dimensions.1 as uint)
     }
 
     fn get_depth_buffer_bits(&self) -> Option<u16> {
-        None
+        self.depth_buffer_bits
     }
 
     fn get_stencil_buffer_bits(&self) -> Option<u16> {
-        None
+        self.stencil_buffer_bits
     }
 
-    fn draw<V, I, U>(&mut self, vb: &::VertexBuffer<V>, ib: &I, program: &::Program,
-        uniforms: &U, draw_parameters: &::DrawParameters) where I: ::IndicesSource,
-        U: ::uniforms::Uniforms
+    fn draw<V, I, ID, U>(&mut self, vb: &V, ib: &I, program: &::Program,
+        uniforms: &U, draw_parameters: &::DrawParameters) where I: ::index_buffer::ToIndicesSource<ID>,
+        U: ::uniforms::Uniforms, ID: ::index_buffer::Index, V: ::vertex_buffer::ToVerticesSource
     {
-        draw(&self.display, Some(&self.attachments), vb, ib, program, uniforms, draw_parameters)
+        use index_buffer::ToIndicesSource;
+
+        if draw_parameters.depth_function.requires_depth_buffer() && !self.has_depth_buffer() {
+            panic!("Requested a depth function but no depth buffer is attached");
+        }
+
+        if let Some(viewport) = draw_parameters.viewport {
+            assert!(viewport.width <= self.display.context.capabilities().max_viewport_dims.0
+                    as u32, "Viewport dimensions are too large");
+            assert!(viewport.height <= self.display.context.capabilities().max_viewport_dims.1
+                    as u32, "Viewport dimensions are too large");
+        }
+
+        fbo::draw(&self.display, Some(&self.attachments), vb.to_vertices_source(),
+                  &ib.to_indices_source(), program, uniforms, draw_parameters, self.dimensions)
     }
 
     fn get_blit_helper(&self) -> ::BlitHelper {
@@ -92,387 +233,130 @@ impl<'a> Surface for FrameBuffer<'a> {
     }
 }
 
-#[deriving(Hash, Clone, PartialEq, Eq)]
-pub struct FramebufferAttachments {
-    pub colors: Vec<gl::types::GLuint>,
-    pub depth: Option<gl::types::GLuint>,
-    pub stencil: Option<gl::types::GLuint>,
-}
-
-/// Frame buffer.
-pub struct FrameBufferObject {
+/// This struct is useless for the moment.
+pub struct MultiOutputFrameBuffer<'a> {
     display: Arc<DisplayImpl>,
-    id: gl::types::GLuint,
-    current_read_buffer: gl::types::GLenum,
+    marker: ContravariantLifetime<'a>,
+    dimensions: (u32, u32),
+    color_attachments: Vec<(String, gl::types::GLuint)>,
 }
 
-impl FrameBufferObject {
-    /// Builds a new FBO.
-    fn new(display: Arc<DisplayImpl>) -> FrameBufferObject {
-        let (tx, rx) = channel();
+impl<'a> MultiOutputFrameBuffer<'a> {
+    /// Creates a new `MultiOutputFramebuffer`.
+    ///
+    /// # Panic
+    ///
+    /// Panics if all attachments don't have the same dimensions.
+    ///
+    pub fn new(display: &::Display, color_attachments: &[(&str, &'a Texture2d)])
+               -> MultiOutputFrameBuffer<'a>
+    {
+        let mut attachments = Vec::new();
+        let mut dimensions = None;
 
-        display.context.exec(move |: ctxt| {
-            unsafe {
-                let id: gl::types::GLuint = mem::uninitialized();
-                if ctxt.version >= &context::GlVersion(3, 0) {
-                    ctxt.gl.GenFramebuffers(1, mem::transmute(&id));
-                } else {
-                    ctxt.gl.GenFramebuffersEXT(1, mem::transmute(&id));
-                }
-                tx.send(id);
-            }
-        });
+        for &(name, texture) in color_attachments.iter() {
+            let tex_dims = (texture.get_width(), texture.get_height().unwrap());
 
-        FrameBufferObject {
-            display: display,
-            id: rx.recv(),
-            current_read_buffer: gl::BACK,
-        }
-    }
-}
-
-impl Drop for FrameBufferObject {
-    fn drop(&mut self) {
-        let id = self.id.clone();
-        self.display.context.exec(move |: ctxt| {
-            unsafe {
-                // unbinding framebuffer
-                if ctxt.version >= &context::GlVersion(3, 0) {
-                    if ctxt.state.draw_framebuffer == id && ctxt.state.read_framebuffer == id {
-                        ctxt.gl.BindFramebuffer(gl::FRAMEBUFFER, 0);
-                        ctxt.state.draw_framebuffer = 0;
-                        ctxt.state.read_framebuffer = 0;
-
-                    } else if ctxt.state.draw_framebuffer == id {
-                        ctxt.gl.BindFramebuffer(gl::DRAW_FRAMEBUFFER, 0);
-                        ctxt.state.draw_framebuffer = 0;
-
-                    } else if ctxt.state.read_framebuffer == id {
-                        ctxt.gl.BindFramebuffer(gl::READ_FRAMEBUFFER, 0);
-                        ctxt.state.read_framebuffer = 0;
-                    }
-
-                } else {
-                    if ctxt.state.draw_framebuffer == id || ctxt.state.read_framebuffer == id {
-                        ctxt.gl.BindFramebufferEXT(gl::FRAMEBUFFER_EXT, 0);
-                        ctxt.state.draw_framebuffer = 0;
-                        ctxt.state.read_framebuffer = 0;
-                    }
-                }
-
-                // deleting
-                if ctxt.version >= &context::GlVersion(3, 0) {
-                    ctxt.gl.DeleteFramebuffers(1, [ id ].as_ptr());
-                } else {
-                    ctxt.gl.DeleteFramebuffersEXT(1, [ id ].as_ptr());
-                }
-            }
-        });
-    }
-}
-
-impl GlObject for FrameBufferObject {
-    fn get_id(&self) -> gl::types::GLuint {
-        self.id
-    }
-}
-
-/// Draws everything.
-pub fn draw<V, I, U>(display: &Arc<DisplayImpl>,
-    framebuffer: Option<&FramebufferAttachments>, vertex_buffer: &VertexBuffer<V>,
-    indices: &I, program: &Program, uniforms: &U, draw_parameters: &DrawParameters)
-    where I: IndicesSource, U: Uniforms
-{
-    let fbo_id = get_framebuffer(display, framebuffer);
-
-    let vao_id = vertex_array_object::get_vertex_array_object(display, vertex_buffer, indices,
-                                                              program);
-
-    let ::IndicesSourceHelper { pointer, primitives, data_type,
-                                indices_count, .. } = indices.to_indices_source_helper();
-    let pointer = pointer.unwrap_or(::std::ptr::null());
-
-    let uniforms = uniforms.to_binder();
-    let uniforms_locations = program::get_uniforms_locations(program);
-    let draw_parameters = draw_parameters.clone();
-
-    let vb_id = vertex_buffer.get_id();
-    let program_id = program.get_id();
-
-    display.context.exec(move |: mut ctxt| {
-        unsafe {
-            bind_framebuffer(&mut ctxt, fbo_id, true, false);
-
-            // binding program
-            if ctxt.state.program != program_id {
-                ctxt.gl.UseProgram(program_id);
-                ctxt.state.program = program_id;
-            }
-
-            // binding program uniforms
-            let mut active_texture = gl::TEXTURE0;
-            uniforms.0.call((&mut ctxt, box |&: name| {
-                uniforms_locations
-                    .get(name)
-                    .map(|val| val.location)
-            }, &mut active_texture));
-
-            // binding VAO
-            if ctxt.state.vertex_array != vao_id {
-                ctxt.gl.BindVertexArray(vao_id);
-                ctxt.state.vertex_array = vao_id;
-            }
-
-            // binding vertex buffer
-            if ctxt.state.array_buffer_binding != vb_id {
-                ctxt.gl.BindBuffer(gl::ARRAY_BUFFER, vb_id);
-                ctxt.state.array_buffer_binding = vb_id;
-            }
-
-            // sync-ing parameters
-            draw_parameters.sync(&mut ctxt);
-
-            // drawing
-            ctxt.gl.DrawElements(primitives, indices_count as i32, data_type, pointer);
-        }
-    });
-}
-
-pub fn clear_color(display: &Arc<DisplayImpl>, framebuffer: Option<&FramebufferAttachments>,
-    red: f32, green: f32, blue: f32, alpha: f32)
-{
-    let fbo_id = get_framebuffer(display, framebuffer);
-
-    let (red, green, blue, alpha) = (
-        red as gl::types::GLclampf,
-        green as gl::types::GLclampf,
-        blue as gl::types::GLclampf,
-        alpha as gl::types::GLclampf
-    );
-
-    display.context.exec(move |: mut ctxt| {
-        bind_framebuffer(&mut ctxt, fbo_id, true, false);
-
-        unsafe {
-            if ctxt.state.clear_color != (red, green, blue, alpha) {
-                ctxt.gl.ClearColor(red, green, blue, alpha);
-                ctxt.state.clear_color = (red, green, blue, alpha);
-            }
-
-            ctxt.gl.Clear(gl::COLOR_BUFFER_BIT);
-        }
-    });
-}
-
-pub fn clear_depth(display: &Arc<DisplayImpl>, framebuffer: Option<&FramebufferAttachments>,
-    value: f32)
-{
-    let value = value as gl::types::GLclampf;
-    let fbo_id = get_framebuffer(display, framebuffer);
-
-    display.context.exec(move |: mut ctxt| {
-        bind_framebuffer(&mut ctxt, fbo_id, true, false);
-
-        unsafe {
-            if ctxt.state.clear_depth != value {
-                ctxt.gl.ClearDepth(value as f64);        // TODO: find out why this needs "as"
-                ctxt.state.clear_depth = value;
-            }
-
-            ctxt.gl.Clear(gl::DEPTH_BUFFER_BIT);
-        }
-    });
-}
-
-pub fn clear_stencil(display: &Arc<DisplayImpl>, framebuffer: Option<&FramebufferAttachments>,
-    value: int)
-{
-    let value = value as gl::types::GLint;
-    let fbo_id = get_framebuffer(display, framebuffer);
-
-    display.context.exec(move |: mut ctxt| {
-        bind_framebuffer(&mut ctxt, fbo_id, true, false);
-
-        unsafe {
-            if ctxt.state.clear_stencil != value {
-                ctxt.gl.ClearStencil(value);
-                ctxt.state.clear_stencil = value;
-            }
-
-            ctxt.gl.Clear(gl::STENCIL_BUFFER_BIT);
-        }
-    });
-}
-
-pub fn blit<S1: Surface, S2: Surface>(source: &S1, target: &S2, mask: gl::types::GLbitfield,
-    src_rect: &Rect, target_rect: &Rect, filter: gl::types::GLenum)
-{
-    let ::BlitHelper(display, source) = source.get_blit_helper();
-    let ::BlitHelper(_, target) = target.get_blit_helper();
-
-    let src_rect = src_rect.clone();
-    let target_rect = target_rect.clone();
-
-    let source = get_framebuffer(display, source);
-    let target = get_framebuffer(display, target);
-
-    display.context.exec(move |: ctxt| {
-        unsafe {
-            // trying to do a named blit if possible
-            if ctxt.version >= &context::GlVersion(4, 5) {
-                ctxt.gl.BlitNamedFramebuffer(source.unwrap_or(0), target.unwrap_or(0),
-                    src_rect.left as gl::types::GLint,
-                    src_rect.bottom as gl::types::GLint,
-                    (src_rect.left + src_rect.width) as gl::types::GLint,
-                    (src_rect.bottom + src_rect.height) as gl::types::GLint,
-                    target_rect.left as gl::types::GLint, target_rect.bottom as gl::types::GLint,
-                    (target_rect.left + target_rect.width) as gl::types::GLint,
-                    (target_rect.bottom + target_rect.height) as gl::types::GLint, mask, filter);
-
-                return;
-            }
-
-            // binding source framebuffer
-            if ctxt.state.read_framebuffer != source.unwrap_or(0) {
-                if ctxt.version >= &context::GlVersion(3, 0) {
-                    ctxt.gl.BindFramebuffer(gl::READ_FRAMEBUFFER, source.unwrap_or(0));
-                    ctxt.state.read_framebuffer = source.unwrap_or(0);
-
-                } else {
-                    ctxt.gl.BindFramebufferEXT(gl::READ_FRAMEBUFFER_EXT, source.unwrap_or(0));
-                    ctxt.state.read_framebuffer = source.unwrap_or(0);
+            if let Some(ref dimensions) = dimensions {
+                if dimensions != &tex_dims {
+                    panic!("All textures of a MultiOutputFrameBuffer must have \
+                            the same dimensions");
                 }
             }
 
-            // binding target framebuffer
-            if ctxt.state.draw_framebuffer != target.unwrap_or(0) {
-                if ctxt.version >= &context::GlVersion(3, 0) {
-                    ctxt.gl.BindFramebuffer(gl::DRAW_FRAMEBUFFER, target.unwrap_or(0));
-                    ctxt.state.draw_framebuffer = target.unwrap_or(0);
-
-                } else {
-                    ctxt.gl.BindFramebufferEXT(gl::DRAW_FRAMEBUFFER_EXT, target.unwrap_or(0));
-                    ctxt.state.draw_framebuffer = target.unwrap_or(0);
-                }
-            }
-
-            // doing the blit
-            if ctxt.version >= &context::GlVersion(3, 0) {
-                ctxt.gl.BlitFramebuffer(src_rect.left as gl::types::GLint,
-                    src_rect.bottom as gl::types::GLint,
-                    (src_rect.left + src_rect.width) as gl::types::GLint,
-                    (src_rect.bottom + src_rect.height) as gl::types::GLint,
-                    target_rect.left as gl::types::GLint, target_rect.bottom as gl::types::GLint,
-                    (target_rect.left + target_rect.width) as gl::types::GLint,
-                    (target_rect.bottom + target_rect.height) as gl::types::GLint, mask, filter);
-
-            } else {
-                ctxt.gl.BlitFramebufferEXT(src_rect.left as gl::types::GLint,
-                    src_rect.bottom as gl::types::GLint,
-                    (src_rect.left + src_rect.width) as gl::types::GLint,
-                    (src_rect.bottom + src_rect.height) as gl::types::GLint,
-                    target_rect.left as gl::types::GLint, target_rect.bottom as gl::types::GLint,
-                    (target_rect.left + target_rect.width) as gl::types::GLint,
-                    (target_rect.bottom + target_rect.height) as gl::types::GLint, mask, filter);
-            }
-        }
-    });
-}
-
-fn get_framebuffer(display: &Arc<DisplayImpl>, framebuffer: Option<&FramebufferAttachments>)
-    -> Option<gl::types::GLuint>
-{
-    if let Some(framebuffer) = framebuffer {
-        let mut framebuffers = display.framebuffer_objects.lock();
-
-        if let Some(value) = framebuffers.get(framebuffer) {
-            return Some(value.id);
+            dimensions = Some(tex_dims);
+            attachments.push((name.to_string(), texture.get_id()));
         }
 
-        let mut new_fbo = FrameBufferObject::new(display.clone());
-        let new_fbo_id = new_fbo.id.clone();
-        initialize_fbo(display, &mut new_fbo, framebuffer);
-        framebuffers.insert(framebuffer.clone(), new_fbo);
-        Some(new_fbo_id)
+        if dimensions.is_none() {
+            panic!("Cannot pass an empty color_attachments when \
+                    creating a MultiOutputFrameBuffer");
+        }
 
-    } else {
-        None
+        MultiOutputFrameBuffer {
+            display: display.context.clone(),
+            marker: ContravariantLifetime,
+            dimensions: dimensions.unwrap(),
+            color_attachments: attachments,
+        }
+    }
+
+    fn build_attachments(&self, program: &Program) -> FramebufferAttachments {
+        let mut colors = Vec::new();
+
+        for &(ref name, texture) in self.color_attachments.iter() {
+            let location = match program.get_frag_data_location(name.as_slice()) {
+                Some(l) => l,
+                None => panic!("The fragment output `{}` was not found in the program", name)
+            };
+
+            colors.push((location, fbo::Attachment::Texture(texture)));
+        }
+
+        FramebufferAttachments {
+            colors: colors,
+            depth: None,
+            stencil: None,
+        }
     }
 }
 
-fn initialize_fbo(display: &Arc<DisplayImpl>, fbo: &mut FrameBufferObject,
-    content: &FramebufferAttachments)
-{
-    use context::GlVersion;
-
-    let fbo_id = fbo.id;
-
-    if content.depth.is_some() { unimplemented!() }
-    if content.stencil.is_some() { unimplemented!() }
-
-    for (slot, texture) in content.colors.iter().enumerate() {
-        let tex_id = texture.clone();
-
-        display.context.exec(move |: mut ctxt| {
-            unsafe {
-                if ctxt.version >= &GlVersion(4, 5) {
-                    ctxt.gl.NamedFramebufferTexture(fbo_id, gl::COLOR_ATTACHMENT0 + slot as u32,
-                        tex_id, 0);
-
-                } else if ctxt.extensions.gl_ext_direct_state_access &&
-                          ctxt.extensions.gl_ext_geometry_shader4
-                {
-                    ctxt.gl.NamedFramebufferTextureEXT(fbo_id, gl::COLOR_ATTACHMENT0 + slot as u32,
-                        tex_id, 0);
-
-                } else if ctxt.version >= &GlVersion(3, 2) {
-                    bind_framebuffer(&mut ctxt, Some(fbo_id), true, false);
-                    ctxt.gl.FramebufferTexture(gl::DRAW_FRAMEBUFFER, gl::COLOR_ATTACHMENT0 + slot as u32,
-                        tex_id, 0);
-
-                } else if ctxt.version >= &GlVersion(3, 0) {
-                    bind_framebuffer(&mut ctxt, Some(fbo_id), true, false);
-                    ctxt.gl.FramebufferTexture2D(gl::DRAW_FRAMEBUFFER,
-                        gl::COLOR_ATTACHMENT0 + slot as u32, gl::TEXTURE_2D, tex_id, 0);
-
-                } else {
-                    bind_framebuffer(&mut ctxt, Some(fbo_id), true, true);
-                    ctxt.gl.FramebufferTexture2DEXT(gl::FRAMEBUFFER_EXT,
-                        gl::COLOR_ATTACHMENT0 + slot as u32, gl::TEXTURE_2D, tex_id, 0);
-                }
-            }
-        });
-    }
+/// Describes an attachment for a color buffer.
+#[deriving(Copy, Clone)]
+pub enum ColorAttachment<'a> {
+    /// A texture.
+    Texture2d(&'a Texture2d),
+    /// A render buffer.
+    RenderBuffer(&'a ::render_buffer::RenderBuffer),
 }
 
-fn bind_framebuffer(ctxt: &mut context::CommandContext, fbo_id: Option<gl::types::GLuint>,
-                    draw: bool, read: bool)
-{
-    let fbo_id = fbo_id.unwrap_or(0);
+/// Trait for objects that can be used as color attachments.
+pub trait ToColorAttachment {
+    /// Builds the `ColorAttachment`.
+    fn to_color_attachment(&self) -> ColorAttachment;
+}
 
-    if draw && ctxt.state.draw_framebuffer != fbo_id {
-        unsafe {
-            if ctxt.version >= &context::GlVersion(3, 0) {
-                ctxt.gl.BindFramebuffer(gl::DRAW_FRAMEBUFFER, fbo_id);
-                ctxt.state.draw_framebuffer = fbo_id;
-            } else {
-                ctxt.gl.BindFramebufferEXT(gl::FRAMEBUFFER_EXT, fbo_id);
-                ctxt.state.draw_framebuffer = fbo_id;
-                ctxt.state.read_framebuffer = fbo_id;
-            }
-        }
-    }
+/// Describes an attachment for a depth buffer.
+#[deriving(Copy, Clone)]
+pub enum DepthAttachment<'a> {
+    /// A texture.
+    Texture2d(&'a DepthTexture2d),
+    /// A render buffer.
+    RenderBuffer(&'a ::render_buffer::DepthRenderBuffer),
+}
 
-    if read && ctxt.state.read_framebuffer != fbo_id {
-        unsafe {
-            if ctxt.version >= &context::GlVersion(3, 0) {
-                ctxt.gl.BindFramebuffer(gl::READ_FRAMEBUFFER, fbo_id);
-                ctxt.state.read_framebuffer = fbo_id;
-            } else {
-                ctxt.gl.BindFramebufferEXT(gl::FRAMEBUFFER_EXT, fbo_id);
-                ctxt.state.draw_framebuffer = fbo_id;
-                ctxt.state.read_framebuffer = fbo_id;
-            }
-        }
-    }
+/// Trait for objects that can be used as depth attachments.
+pub trait ToDepthAttachment {
+    /// Builds the `DepthAttachment`.
+    fn to_depth_attachment(&self) -> DepthAttachment;
+}
+
+/// Describes an attachment for a stencil buffer.
+#[deriving(Copy, Clone)]
+pub enum StencilAttachment<'a> {
+    /// A texture.
+    Texture2d(&'a StencilTexture2d),
+    /// A render buffer.
+    RenderBuffer(&'a ::render_buffer::StencilRenderBuffer),
+}
+
+/// Trait for objects that can be used as stencil attachments.
+pub trait ToStencilAttachment {
+    /// Builds the `StencilAttachment`.
+    fn to_stencil_attachment(&self) -> StencilAttachment;
+}
+
+/// Describes an attachment for a depth and stencil buffer.
+#[deriving(Copy, Clone)]
+pub enum DepthStencilAttachment<'a> {
+    /// A texture.
+    Texture2d(&'a DepthStencilTexture2d),
+    /// A render buffer.
+    RenderBuffer(&'a ::render_buffer::DepthStencilRenderBuffer),
+}
+
+/// Trait for objects that can be used as depth and stencil attachments.
+pub trait ToDepthStencilAttachment {
+    /// Builds the `DepthStencilAttachment`.
+    fn to_depth_stencil_attachment(&self) -> DepthStencilAttachment;
 }

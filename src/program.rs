@@ -1,9 +1,13 @@
 use gl;
 use std::{fmt, mem, ptr};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, StaticMutex, MUTEX_INIT};
 use {Display, DisplayImpl, GlObject};
 use context::CommandContext;
+
+/// Some shader compilers have race-condition issues.
+/// We lock this mutex in the GL thread every time we compile a shader or link a program.
+static COMPILER_GLOBAL_LOCK: StaticMutex = MUTEX_INIT;
 
 struct Shader {
     display: Arc<DisplayImpl>,
@@ -29,6 +33,7 @@ pub struct Program {
     id: gl::types::GLuint,
     uniforms: Arc<HashMap<String, Uniform>>,
     attributes: Arc<HashMap<String, Attribute>>,
+    frag_data_locations: Mutex<HashMap<String, Option<u32>>>,
 }
 
 /// Informations about a uniform (except its name).
@@ -59,9 +64,6 @@ pub enum ProgramCreationError {
     /// Error while linking the program.
     LinkingError(String),
 
-    /// `glCreateProgram` failed.
-    ProgramCreationFailure,
-
     /// One of the request shader type is not supported by the backend.
     ///
     /// Usually the case of geometry shaders.
@@ -74,7 +76,6 @@ impl ::std::error::Error for ProgramCreationError {
             &ProgramCreationError::CompilationError(_) => "Compilation error in one of the \
                                                            shaders",
             &ProgramCreationError::LinkingError(_) => "Error while linking shaders together",
-            &ProgramCreationError::ProgramCreationFailure => "glCreateProgram failed",
             &ProgramCreationError::ShaderTypeNotSupported => "One of the request shader type is \
                                                               not supported by the backend",
         }
@@ -84,7 +85,6 @@ impl ::std::error::Error for ProgramCreationError {
         match self {
             &ProgramCreationError::CompilationError(ref s) => Some(s.clone()),
             &ProgramCreationError::LinkingError(ref s) => Some(s.clone()),
-            &ProgramCreationError::ProgramCreationFailure => None,
             &ProgramCreationError::ShaderTypeNotSupported => None,
         }
     }
@@ -136,8 +136,7 @@ impl Program {
             unsafe {
                 let id = ctxt.gl.CreateProgram();
                 if id == 0 {
-                    tx.send(Err(ProgramCreationError::ProgramCreationFailure));
-                    return;
+                    panic!("glCreateProgram failed");
                 }
 
                 // attaching shaders
@@ -145,8 +144,13 @@ impl Program {
                     ctxt.gl.AttachShader(id, sh.clone());
                 }
 
-                // linking and checking for errors
-                ctxt.gl.LinkProgram(id);
+                // linking
+                {
+                    let _lock = COMPILER_GLOBAL_LOCK.lock();
+                    ctxt.gl.LinkProgram(id);
+                }
+
+                // checking for errors
                 {   let mut link_success: gl::types::GLint = mem::uninitialized();
                     ctxt.gl.GetProgramiv(id, gl::LINK_STATUS, &mut link_success);
                     if link_success == 0 {
@@ -209,7 +213,45 @@ impl Program {
             id: id,
             uniforms: Arc::new(uniforms),
             attributes: Arc::new(attributes),
+            frag_data_locations: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Returns the *location* of an output fragment, if it exists.
+    ///
+    /// The *location* is a low-level information that is used internally by glium.
+    /// You probably don't need to call this function.
+    ///
+    /// You can declare output fragments in your shaders by writing:
+    ///
+    /// ```notrust
+    /// out vec4 foo;
+    /// ```
+    ///
+    pub fn get_frag_data_location(&self, name: &str) -> Option<u32> {
+        // looking for a cached value
+        if let Some(result) = self.frag_data_locations.lock().get(name) {
+            return result.clone();
+        }
+
+        // querying opengl
+        let id = self.id.clone();
+        let name_c = name.to_c_str();
+        let (tx, rx) = channel();
+        self.display.context.exec(move |: ctxt| {
+            unsafe {
+                let value = ctxt.gl.GetFragDataLocation(id, name_c.as_ptr());
+                tx.send(value);
+            }
+        });
+
+        let location = match rx.recv() {
+            -1 => None,
+            a => Some(a as u32),
+        };
+
+        self.frag_data_locations.lock().insert(name.to_string(), location);
+        location
     }
 }
 
@@ -286,7 +328,12 @@ fn build_shader<S: ToCStr>(display: &Display, shader_type: gl::types::GLenum, so
             }
 
             ctxt.gl.ShaderSource(id, 1, [ source_code.as_ptr() ].as_ptr(), ptr::null());
-            ctxt.gl.CompileShader(id);
+
+            // compiling
+            {
+                let _lock = COMPILER_GLOBAL_LOCK.lock();
+                ctxt.gl.CompileShader(id);
+            }
 
             // checking compilation success
             let compilation_success = {

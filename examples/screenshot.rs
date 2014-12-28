@@ -1,36 +1,36 @@
 #![feature(phase)]
 
-extern crate glutin;
-extern crate glium;
-extern crate test;
 
 #[phase(plugin)]
 extern crate glium_macros;
 
+extern crate glutin;
+extern crate glium;
+
+#[cfg(feature = "image")]
+extern crate image;
+
 use glium::Surface;
 
-mod support;
-
-#[bench]
-fn clear_color(bencher: &mut test::Bencher) {
-    let display = support::build_display();
-
-    bencher.iter(|| {
-        let mut target = display.draw();
-        target.clear_color(1.0, 0.0, 0.0, 1.0);
-        target.finish();
-
-        display.synchronize();
-    });
+#[cfg(not(feature = "image"))]
+fn main() {
+    println!("You need to compile glium with the `image` feature in order to run this example");
 }
 
-#[bench]
-fn triangle(bencher: &mut test::Bencher) {
-    let display = support::build_display();
+#[cfg(feature = "image")]
+fn main() {
+    use glium::DisplayBuild;
+
+    // building the display, ie. the main object
+    let display = glutin::WindowBuilder::new()
+        .with_visibility(false)
+        .build_glium()
+        .unwrap();
 
     // building the vertex buffer, which contains all the vertices that we will draw
     let vertex_buffer = {
         #[vertex_format]
+        #[deriving(Copy)]
         struct Vertex {
             position: [f32, ..2],
             color: [f32, ..3],
@@ -84,26 +84,31 @@ fn triangle(bencher: &mut test::Bencher) {
 
     // creating the uniforms structure
     #[uniforms]
+    #[deriving(Copy)]
     struct Uniforms {
         matrix: [[f32, ..4], ..4],
     }
     
-    bencher.iter(|| {
-        // building the uniforms
-        let uniforms = Uniforms {
-            matrix: [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0f32]
-            ]
-        };
+    // drawing once
 
-        let mut target = display.draw();
-        target.draw(&vertex_buffer, &index_buffer, &program, &uniforms,
-                    &std::default::Default::default());
-        target.finish();
+    // building the uniforms
+    let uniforms = Uniforms {
+        matrix: [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0f32]
+        ]
+    };
 
-        display.synchronize();
-    });
+    // drawing a frame
+    let mut target = display.draw();
+    target.clear_color(0.0, 0.0, 0.0, 0.0);
+    target.draw(&vertex_buffer, &index_buffer, &program, &uniforms, &std::default::Default::default());
+    target.finish();
+
+    // reading the front buffer into an image
+    let image: image::DynamicImage = display.read_front_buffer();
+    let output = std::io::fs::File::create(&Path::new("glium-example-screenshot.png"));
+    image.save(output, image::ImageFormat::PNG).unwrap();
 }

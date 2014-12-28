@@ -4,6 +4,9 @@ enum TextureType {
     Compressed,
     Integral,
     Unsigned,
+    Depth,
+    Stencil,
+    DepthStencil,
 }
 
 #[deriving(PartialEq, Eq)]
@@ -20,22 +23,37 @@ pub fn build_texture_file<W: Writer>(mut dest: &mut W) {
     build_texture(dest, TextureType::Compressed, TextureDimensions::Texture1d);
     build_texture(dest, TextureType::Integral, TextureDimensions::Texture1d);
     build_texture(dest, TextureType::Unsigned, TextureDimensions::Texture1d);
+    build_texture(dest, TextureType::Depth, TextureDimensions::Texture1d);
+    build_texture(dest, TextureType::Stencil, TextureDimensions::Texture1d);
+    build_texture(dest, TextureType::DepthStencil, TextureDimensions::Texture1d);
     build_texture(dest, TextureType::Regular, TextureDimensions::Texture2d);
     build_texture(dest, TextureType::Compressed, TextureDimensions::Texture2d);
     build_texture(dest, TextureType::Integral, TextureDimensions::Texture2d);
     build_texture(dest, TextureType::Unsigned, TextureDimensions::Texture2d);
+    build_texture(dest, TextureType::Depth, TextureDimensions::Texture2d);
+    build_texture(dest, TextureType::Stencil, TextureDimensions::Texture2d);
+    build_texture(dest, TextureType::DepthStencil, TextureDimensions::Texture2d);
     build_texture(dest, TextureType::Regular, TextureDimensions::Texture3d);
     build_texture(dest, TextureType::Compressed, TextureDimensions::Texture3d);
     build_texture(dest, TextureType::Integral, TextureDimensions::Texture3d);
     build_texture(dest, TextureType::Unsigned, TextureDimensions::Texture3d);
+    build_texture(dest, TextureType::Depth, TextureDimensions::Texture3d);
+    build_texture(dest, TextureType::Stencil, TextureDimensions::Texture3d);
+    build_texture(dest, TextureType::DepthStencil, TextureDimensions::Texture3d);
     build_texture(dest, TextureType::Regular, TextureDimensions::Texture1dArray);
     build_texture(dest, TextureType::Compressed, TextureDimensions::Texture1dArray);
     build_texture(dest, TextureType::Integral, TextureDimensions::Texture1dArray);
     build_texture(dest, TextureType::Unsigned, TextureDimensions::Texture1dArray);
+    build_texture(dest, TextureType::Depth, TextureDimensions::Texture1dArray);
+    build_texture(dest, TextureType::Stencil, TextureDimensions::Texture1dArray);
+    build_texture(dest, TextureType::DepthStencil, TextureDimensions::Texture1dArray);
     build_texture(dest, TextureType::Regular, TextureDimensions::Texture2dArray);
     build_texture(dest, TextureType::Compressed, TextureDimensions::Texture2dArray);
     build_texture(dest, TextureType::Integral, TextureDimensions::Texture2dArray);
     build_texture(dest, TextureType::Unsigned, TextureDimensions::Texture2dArray);
+    build_texture(dest, TextureType::Depth, TextureDimensions::Texture2dArray);
+    build_texture(dest, TextureType::Stencil, TextureDimensions::Texture2dArray);
+    build_texture(dest, TextureType::DepthStencil, TextureDimensions::Texture2dArray);
 }
 
 fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: TextureDimensions) {
@@ -46,6 +64,9 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
             TextureType::Compressed => "Compressed",
             TextureType::Integral => "Integral",
             TextureType::Unsigned => "Unsigned",
+            TextureType::Depth => "Depth",
+            TextureType::Stencil => "Stencil",
+            TextureType::DepthStencil => "DepthStencil",
         };
 
         let suffix = match dimensions {
@@ -83,6 +104,9 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
         TextureType::Regular | TextureType::Compressed => " containing floating-point data",
         TextureType::Integral => " containing signed integral data",
         TextureType::Unsigned => " containing unsigned integral data",
+        TextureType::Depth => " containing depth data",
+        TextureType::Stencil => " containing stencil data",
+        TextureType::DepthStencil => " containing both depth and stencil data",
     })).unwrap();
     (writeln!(dest, ".")).unwrap();
     (writeln!(dest, "pub struct {}(TextureImplementation);", name)).unwrap();
@@ -96,6 +120,15 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
                 }}
             ", name)).unwrap();
 
+    // `GlObject` trait impl
+    (writeln!(dest, "
+                impl GlObject for {} {{
+                    fn get_id(&self) -> gl::types::GLuint {{
+                        self.0.get_id()
+                    }}
+                }}
+            ", name)).unwrap();
+
     // `UniformValue` trait impl
     (writeln!(dest, "
                 impl<'a> UniformValue for &'a {} {{
@@ -104,6 +137,49 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
                     }}
                 }}
             ", name)).unwrap();
+
+    // `ToXXXAttachment` trait impl
+    if dimensions == TextureDimensions::Texture2d {
+        match ty {
+            TextureType::Regular => {
+                (writeln!(dest, "
+                        impl ::framebuffer::ToColorAttachment for {} {{
+                            fn to_color_attachment(&self) -> ::framebuffer::ColorAttachment {{
+                                ::framebuffer::ColorAttachment::Texture2d(self)
+                            }}
+                        }}
+                    ", name)).unwrap();
+            },
+            TextureType::Depth => {
+                (writeln!(dest, "
+                        impl ::framebuffer::ToDepthAttachment for {} {{
+                            fn to_depth_attachment(&self) -> ::framebuffer::DepthAttachment {{
+                                ::framebuffer::DepthAttachment::Texture2d(self)
+                            }}
+                        }}
+                    ", name)).unwrap();
+            },
+            TextureType::Stencil => {
+                (writeln!(dest, "
+                        impl ::framebuffer::ToStencilAttachment for {} {{
+                            fn to_stencil_attachment(&self) -> ::framebuffer::StencilAttachment {{
+                                ::framebuffer::StencilAttachment::Texture2d(self)
+                            }}
+                        }}
+                    ", name)).unwrap();
+            },
+            TextureType::DepthStencil => {
+                (writeln!(dest, "
+                        impl ::framebuffer::ToDepthStencilAttachment for {} {{
+                            fn to_depth_stencil_attachment(&self) -> ::framebuffer::DepthStencilAttachment {{
+                                ::framebuffer::DepthStencilAttachment::Texture2d(self)
+                            }}
+                        }}
+                    ", name)).unwrap();
+            },
+            _ => ()
+        }
+    }
 
     // opening `impl Texture` block
     (writeln!(dest, "impl {} {{", name)).unwrap();
@@ -136,12 +212,14 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
 
         // writing the `let format = ...` line
         match dimensions {
-            TextureDimensions::Texture1d | TextureDimensions::Texture2d |
-            TextureDimensions::Texture3d => {
-                (writeln!(dest, "let format = data.get_format();")).unwrap();
+            TextureDimensions::Texture1d | TextureDimensions::Texture1dArray => {
+                (writeln!(dest, "let format = Texture1dData::get_format(None::<T>);")).unwrap();
             },
-            TextureDimensions::Texture1dArray | TextureDimensions::Texture2dArray => {
-                (writeln!(dest, "let format = data[0].get_format();")).unwrap();
+            TextureDimensions::Texture2d | TextureDimensions::Texture2dArray => {
+                (writeln!(dest, "let format = Texture2dData::get_format(None::<T>);")).unwrap();
+            },
+            TextureDimensions::Texture3d => {
+                (writeln!(dest, "let format = Texture3dData::get_format(None::<T>);")).unwrap();
             },
         }
         match ty {
@@ -151,30 +229,44 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
             TextureType::Regular | TextureType::Integral | TextureType::Unsigned => {
                 (write!(dest, "let format = format.to_default_float_format();")).unwrap();
             },
+            TextureType::Depth => {
+                (write!(dest, "let format = DepthFormat::I24.to_glenum();")).unwrap();
+            },
+            TextureType::Stencil => {
+                (write!(dest, "let format = StencilFormat::I8.to_glenum();")).unwrap();
+            },
+            TextureType::DepthStencil => {
+                (write!(dest, "let format = DepthStencilFormat::I24I8.to_glenum();")).unwrap();
+            },
         };
 
         // writing the `let (client_format, client_type) = ...` line
         match dimensions {
-            TextureDimensions::Texture1d | TextureDimensions::Texture2d |
-            TextureDimensions::Texture3d => {
-                (writeln!(dest, "let client_format = data.get_format();")).unwrap();
+            TextureDimensions::Texture1d | TextureDimensions::Texture1dArray => {
+                (writeln!(dest, "let client_format = Texture1dData::get_format(None::<T>);")).unwrap();
             },
-            TextureDimensions::Texture1dArray | TextureDimensions::Texture2dArray => {
-                (writeln!(dest, "let client_format = data[0].get_format();")).unwrap();
+            TextureDimensions::Texture2d | TextureDimensions::Texture2dArray => {
+                (writeln!(dest, "let client_format = Texture2dData::get_format(None::<T>);")).unwrap();
+            },
+            TextureDimensions::Texture3d => {
+                (writeln!(dest, "let client_format = Texture3dData::get_format(None::<T>);")).unwrap();
             },
         }
         (write!(dest, "let (client_format, client_type) = ")).unwrap();
         match ty {
-            TextureType::Compressed | TextureType::Regular => {
+            TextureType::Compressed | TextureType::Regular | TextureType::Depth => {
                 (write!(dest, "client_format.to_gl_enum()")).unwrap();
             },
-            TextureType::Integral => {
+            TextureType::Integral | TextureType::Stencil => {
                 (write!(dest, "client_format.to_gl_enum_int().expect(\"Client format must \
                                have an integral format\")")).unwrap();
             },
             TextureType::Unsigned => {
                 (write!(dest, "client_format.to_gl_enum_uint().expect(\"Client format must \
                                have an integral format\")")).unwrap();
+            },
+            TextureType::DepthStencil => {
+                (write!(dest, "unimplemented!()")).unwrap();
             },
         };
         (writeln!(dest, ";")).unwrap();
@@ -240,6 +332,9 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
             TextureType::Compressed => "CompressedFormat",
             TextureType::Integral => "UncompressedIntFormat",
             TextureType::Unsigned => "UncompressedUintFormat",
+            TextureType::Depth => "DepthFormat",
+            TextureType::Stencil => "StencilFormat",
+            TextureType::DepthStencil => "DepthStencilFormat",
         };
 
         let dim_params = match dimensions {
@@ -256,12 +351,12 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
                 ///
                 /// The texture will contain undefined data.
                 pub fn new_empty(display: &::Display, format: {format}, {dim_params}) -> {name} {{
-                    let format = format.to_gl_enum();
+                    let format = format.to_glenum();
             ", format = format, dim_params = dim_params, name = name)).unwrap();
 
         // writing the constructor
         (write!(dest, "{}(TextureImplementation::new::<u8>(display, format, None, \
-                       0, 0, ", name)).unwrap();
+                       gl::RGBA, gl::UNSIGNED_BYTE, ", name)).unwrap();
         match dimensions {
             TextureDimensions::Texture1d => (write!(dest, "width, None, None, None")).unwrap(),
             TextureDimensions::Texture2d => (write!(dest, "width, Some(height), None, None")).unwrap(),
@@ -291,8 +386,8 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
                 ///
                 pub fn as_surface<'a>(&'a self) -> TextureSurface<'a> {{
                     // TODO: hacky, shouldn't recreate a Display
-                    TextureSurface(framebuffer::FrameBuffer::new(&::Display {{ context: self.0.display.clone() }})
-                        .with_color_texture(self))
+                    let display = ::Display {{ context: self.0.display.clone() }};
+                    TextureSurface(framebuffer::SimpleFrameBuffer::new(&display, self))
                 }}
             ")).unwrap();
     }

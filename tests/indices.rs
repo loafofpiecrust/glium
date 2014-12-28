@@ -40,13 +40,7 @@ struct Vertex {
 }
 
 #[test]
-fn triangles_list_cpu() {
-    // ignoring test on travis
-    // TODO: find out why they are failing
-    if ::std::os::getenv("TRAVIS").is_some() {
-        return;
-    }
-    
+fn triangles_list_cpu() {    
     let display = support::build_display();
     let program = build_program(&display);
 
@@ -72,12 +66,6 @@ fn triangles_list_cpu() {
 
 #[test]
 fn triangle_strip_cpu() {
-    // ignoring test on travis
-    // TODO: find out why they are failing
-    if ::std::os::getenv("TRAVIS").is_some() {
-        return;
-    }
-
     let display = support::build_display();
     let program = build_program(&display);
 
@@ -103,12 +91,6 @@ fn triangle_strip_cpu() {
 
 #[test]
 fn triangles_list_gpu() {
-    // ignoring test on travis
-    // TODO: find out why they are failing
-    if ::std::os::getenv("TRAVIS").is_some() {
-        return;
-    }
-
     let display = support::build_display();
     let program = build_program(&display);
 
@@ -135,12 +117,6 @@ fn triangles_list_gpu() {
 
 #[test]
 fn triangle_strip_gpu() {
-    // ignoring test on travis
-    // TODO: find out why they are failing
-    if ::std::os::getenv("TRAVIS").is_some() {
-        return;
-    }
-
     let display = support::build_display();
     let program = build_program(&display);
 
@@ -162,5 +138,29 @@ fn triangle_strip_gpu() {
     assert_eq!(data[0][0], (255, 0, 0));
     assert_eq!(data.last().unwrap().last().unwrap(), &(255, 0, 0));
     
+    display.assert_no_error();
+}
+
+#[test]
+fn get_primitives_type() {
+    let display = support::build_display();
+
+    let indices = glium::index_buffer::TriangleStrip(vec![0u8, 1, 2, 3]);
+    let indices = glium::IndexBuffer::new(&display, indices);
+
+    assert_eq!(indices.get_primitives_type(), glium::index_buffer::PrimitiveType::TriangleStrip);
+
+    display.assert_no_error();
+}
+
+#[test]
+fn get_indices_type() {
+    let display = support::build_display();
+
+    let indices = glium::index_buffer::TriangleStrip(vec![0u8, 1, 2, 3]);
+    let indices = glium::IndexBuffer::new(&display, indices);
+
+    assert_eq!(indices.get_indices_type(), glium::index_buffer::IndexType::U8);
+
     display.assert_no_error();
 }

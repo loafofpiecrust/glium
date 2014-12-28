@@ -22,15 +22,13 @@ use std::sync::Arc;
 use buffer::{mod, Buffer};
 use context::GlVersion;
 use uniforms::{UniformValue, UniformValueBinder};
-use {Surface, GlObject};
+use {Surface, GlObject, ToGlEnum};
 
 pub use self::pixel::PixelValue;
-pub use self::render_buffer::RenderBuffer;
 
 mod pixel;
-mod render_buffer;
 
-include!(concat!(env!("OUT_DIR"), "/textures.rs"))
+include!(concat!(env!("OUT_DIR"), "/textures.rs"));
 
 /// Trait that describes a texture.
 pub trait Texture {
@@ -105,6 +103,51 @@ pub enum ClientFormat {
 }
 
 impl ClientFormat {
+    /// Returns the size in bytes of a pixel of this type.
+    pub fn get_size(&self) -> uint {
+        use std::mem;
+
+        match *self {
+            ClientFormat::U8 => 1 * mem::size_of::<u8>(),
+            ClientFormat::U8U8 => 2 * mem::size_of::<u8>(),
+            ClientFormat::U8U8U8 => 3 * mem::size_of::<u8>(),
+            ClientFormat::U8U8U8U8 => 4 * mem::size_of::<u8>(),
+            ClientFormat::I8 => 1 * mem::size_of::<i8>(),
+            ClientFormat::I8I8 => 2 * mem::size_of::<i8>(),
+            ClientFormat::I8I8I8 => 3 * mem::size_of::<i8>(),
+            ClientFormat::I8I8I8I8 => 4 * mem::size_of::<i8>(),
+            ClientFormat::U16 => 1 * mem::size_of::<u16>(),
+            ClientFormat::U16U16 => 2 * mem::size_of::<u16>(),
+            ClientFormat::U16U16U16 => 3 * mem::size_of::<u16>(),
+            ClientFormat::U16U16U16U16 => 4 * mem::size_of::<u16>(),
+            ClientFormat::I16 => 1 * mem::size_of::<i16>(),
+            ClientFormat::I16I16 => 2 * mem::size_of::<i16>(),
+            ClientFormat::I16I16I16 => 3 * mem::size_of::<i16>(),
+            ClientFormat::I16I16I16I16 => 4 * mem::size_of::<i16>(),
+            ClientFormat::U32 => 1 * mem::size_of::<u32>(),
+            ClientFormat::U32U32 => 2 * mem::size_of::<u32>(),
+            ClientFormat::U32U32U32 => 3 * mem::size_of::<u32>(),
+            ClientFormat::U32U32U32U32 => 4 * mem::size_of::<u32>(),
+            ClientFormat::I32 => 1 * mem::size_of::<i32>(),
+            ClientFormat::I32I32 => 2 * mem::size_of::<i32>(),
+            ClientFormat::I32I32I32 => 3 * mem::size_of::<i32>(),
+            ClientFormat::I32I32I32I32 => 4 * mem::size_of::<i32>(),
+            ClientFormat::U3U3U2 => (3 + 3 + 2) / 8,
+            ClientFormat::U5U6U5 => (5 + 6 + 5) / 8,
+            ClientFormat::U4U4U4U4 => (4 + 4 + 4 + 4) / 8,
+            ClientFormat::U5U5U5U1 => (5 + 5 + 5 + 1) / 8,
+            ClientFormat::U10U10U10U2 => (10 + 10 + 10 + 2) / 2,
+            ClientFormat::F16 => 16 / 8,
+            ClientFormat::F16F16 => (16 + 16) / 8,
+            ClientFormat::F16F16F16 => (16 + 16 + 16) / 8,
+            ClientFormat::F16F16F16F16 => (16 + 16 + 16 + 16) / 8,
+            ClientFormat::F32 => 1 * mem::size_of::<f32>(),
+            ClientFormat::F32F32 => 2 * mem::size_of::<f32>(),
+            ClientFormat::F32F32F32 => 3 * mem::size_of::<f32>(),
+            ClientFormat::F32F32F32F32 => 4 * mem::size_of::<f32>(),
+        }
+    }
+
     /// Returns a (format, type) tuple.
     #[doc(hidden)]      // TODO: shouldn't be pub
     pub fn to_gl_enum(&self) -> (gl::types::GLenum, gl::types::GLenum) {
@@ -245,7 +288,7 @@ impl ClientFormat {
     /// to this client format.
     fn to_default_float_format(&self) -> gl::types::GLenum {
         self.to_float_internal_format()
-            .map(|e| e.to_gl_enum())
+            .map(|e| e.to_glenum())
             .unwrap_or_else(|| self.to_gl_enum().0)
     }
 
@@ -423,8 +466,8 @@ pub enum UncompressedFloatFormat {
     F9F9F9,
 }
 
-impl UncompressedFloatFormat {
-    fn to_gl_enum(&self) -> gl::types::GLenum {
+impl ToGlEnum for UncompressedFloatFormat {
+    fn to_glenum(&self) -> gl::types::GLenum {
         match *self {
             UncompressedFloatFormat::U8 => gl::R8,
             UncompressedFloatFormat::I8 => gl::R8_SNORM,
@@ -485,8 +528,8 @@ pub enum UncompressedIntFormat {
     I32I32I32I32,
 }
 
-impl UncompressedIntFormat {
-    fn to_gl_enum(&self) -> gl::types::GLenum {
+impl ToGlEnum for UncompressedIntFormat {
+    fn to_glenum(&self) -> gl::types::GLenum {
         match *self {
             UncompressedIntFormat::I8 => gl::R8I,
             UncompressedIntFormat::I16 => gl::R16I,
@@ -526,8 +569,8 @@ pub enum UncompressedUintFormat {
     U10U10U10U2,
 }
 
-impl UncompressedUintFormat {
-    fn to_gl_enum(&self) -> gl::types::GLenum {
+impl ToGlEnum for UncompressedUintFormat {
+    fn to_glenum(&self) -> gl::types::GLenum {
         match *self {
             UncompressedUintFormat::U8 => gl::R8UI,
             UncompressedUintFormat::U16 => gl::R16UI,
@@ -561,13 +604,82 @@ pub enum CompressedFormat {
     RGTCFormatII,
 }
 
-impl CompressedFormat {
-    fn to_gl_enum(&self) -> gl::types::GLenum {
+impl ToGlEnum for CompressedFormat {
+    fn to_glenum(&self) -> gl::types::GLenum {
         match *self {
             CompressedFormat::RGTCFormatU => gl::COMPRESSED_RED_RGTC1,
             CompressedFormat::RGTCFormatI => gl::COMPRESSED_SIGNED_RED_RGTC1,
             CompressedFormat::RGTCFormatUU => gl::COMPRESSED_RG_RGTC2,
             CompressedFormat::RGTCFormatII => gl::COMPRESSED_SIGNED_RG_RGTC2,
+        }
+    }
+}
+
+/// List of formats available for depth textures.
+///
+/// `I16`, `I24` and `I32` are still treated as if they were floating points.
+/// Only the internal representation is integral.
+#[allow(missing_docs)]
+#[deriving(Show, Clone, Copy, PartialEq, Eq)]
+pub enum DepthFormat {
+    I16,
+    I24,
+    /// May not be supported by all hardwares.
+    I32,
+    F32,
+}
+
+impl ToGlEnum for DepthFormat {
+    fn to_glenum(&self) -> gl::types::GLenum {
+        match *self {
+            DepthFormat::I16 => gl::DEPTH_COMPONENT16,
+            DepthFormat::I24 => gl::DEPTH_COMPONENT24,
+            DepthFormat::I32 => gl::DEPTH_COMPONENT32,
+            DepthFormat::F32 => gl::DEPTH_COMPONENT32F,
+        }
+    }
+}
+
+/// List of formats available for depth-stencil textures.
+// TODO: If OpenGL 4.3 or ARB_stencil_texturing is not available, then depth/stencil
+//       textures are treated by samplers exactly like depth-only textures
+#[allow(missing_docs)]
+#[deriving(Show, Clone, Copy, PartialEq, Eq)]
+pub enum DepthStencilFormat {
+    I24I8,
+    F32I8,
+}
+
+impl ToGlEnum for DepthStencilFormat {
+    fn to_glenum(&self) -> gl::types::GLenum {
+        match *self {
+            DepthStencilFormat::I24I8 => gl::DEPTH24_STENCIL8,
+            DepthStencilFormat::F32I8 => gl::DEPTH32F_STENCIL8,
+        }
+    }
+}
+
+/// List of formats available for stencil textures.
+///
+/// You are strongly advised to only use `I8`.
+// TODO: Stencil only formats cannot be used for Textures, unless OpenGL 4.4 or
+//       ARB_texture_stencil8 is available.
+#[allow(missing_docs)]
+#[deriving(Show, Clone, Copy, PartialEq, Eq)]
+pub enum StencilFormat {
+    I1,
+    I4,
+    I8,
+    I16,
+}
+
+impl ToGlEnum for StencilFormat {
+    fn to_glenum(&self) -> gl::types::GLenum {
+        match *self {
+            StencilFormat::I1 => gl::STENCIL_INDEX1,
+            StencilFormat::I4 => gl::STENCIL_INDEX4,
+            StencilFormat::I8 => gl::STENCIL_INDEX8,
+            StencilFormat::I16 => gl::STENCIL_INDEX16,
         }
     }
 }
@@ -585,7 +697,7 @@ pub enum TextureFormat {
 #[experimental = "Will be rewritten to use an associated type"]
 pub trait Texture1dData<T> {
     /// Returns the format of the pixels.
-    fn get_format(&self) -> ClientFormat;
+    fn get_format(Option<Self>) -> ClientFormat;
 
     /// Returns a vec where each element is a pixel of the texture.
     fn into_vec(self) -> Vec<T>;
@@ -595,7 +707,7 @@ pub trait Texture1dData<T> {
 }
 
 impl<P: PixelValue> Texture1dData<P> for Vec<P> {
-    fn get_format(&self) -> ClientFormat {
+    fn get_format(_: Option<Vec<P>>) -> ClientFormat {
         PixelValue::get_format(None::<P>)
     }
 
@@ -609,7 +721,7 @@ impl<P: PixelValue> Texture1dData<P> for Vec<P> {
 }
 
 impl<'a, P: PixelValue + Clone> Texture1dData<P> for &'a [P] {
-    fn get_format(&self) -> ClientFormat {
+    fn get_format(_: Option<&'a [P]>) -> ClientFormat {
         PixelValue::get_format(None::<P>)
     }
 
@@ -626,7 +738,7 @@ impl<'a, P: PixelValue + Clone> Texture1dData<P> for &'a [P] {
 #[experimental = "Will be rewritten to use an associated type"]
 pub trait Texture2dData<P> {
     /// Returns the format of the pixels.
-    fn get_format(&self) -> ClientFormat;
+    fn get_format(Option<Self>) -> ClientFormat;
 
     /// Returns the dimensions of the texture.
     fn get_dimensions(&self) -> (u32, u32);
@@ -639,7 +751,7 @@ pub trait Texture2dData<P> {
 }
 
 impl<P: PixelValue + Clone> Texture2dData<P> for Vec<Vec<P>> {      // TODO: remove Clone
-    fn get_format(&self) -> ClientFormat {
+    fn get_format(_: Option<Vec<Vec<P>>>) -> ClientFormat {
         PixelValue::get_format(None::<P>)
     }
 
@@ -660,7 +772,7 @@ impl<P: PixelValue + Clone> Texture2dData<P> for Vec<Vec<P>> {      // TODO: rem
 impl<T, P> Texture2dData<T> for image::ImageBuffer<Vec<T>, T, P> where T: image::Primitive + Send,
     P: PixelValue + image::Pixel<T> + Clone + Copy
 {
-    fn get_format(&self) -> ClientFormat {
+    fn get_format(_: Option<image::ImageBuffer<Vec<T>, T, P>>) -> ClientFormat {
         PixelValue::get_format(None::<P>)
     }
 
@@ -675,6 +787,7 @@ impl<T, P> Texture2dData<T> for image::ImageBuffer<Vec<T>, T, P> where T: image:
 
         let raw_data = self.into_vec();
 
+        // the image library gives use rows from bottom to top, so we need to flip them
         raw_data
             .as_slice()
             .chunks(width as uint * image::Pixel::channel_count(None::<&P>) as uint)
@@ -684,14 +797,26 @@ impl<T, P> Texture2dData<T> for image::ImageBuffer<Vec<T>, T, P> where T: image:
             .collect()
     }
 
-    fn from_vec(_: Vec<T>, _: u32) -> image::ImageBuffer<Vec<T>, T, P> {
-        unimplemented!()        // TODO: 
+    fn from_vec(data: Vec<T>, width: u32) -> image::ImageBuffer<Vec<T>, T, P> {
+        let pixels_size = image::Pixel::channel_count(None::<&P>);
+        let height = data.len() as u32 / (width * pixels_size as u32);
+
+        // opengl gives use rows from bottom to top, so we need to flip them
+        let data = data
+            .as_slice()
+            .chunks(width as uint * image::Pixel::channel_count(None::<&P>) as uint)
+            .rev()
+            .flat_map(|row| row.iter())
+            .map(|p| p.clone())
+            .collect();
+
+        image::ImageBuffer::from_raw(width, height, data).unwrap()
     }
 }
 
 #[cfg(feature = "image")]
 impl Texture2dData<u8> for image::DynamicImage {
-    fn get_format(&self) -> ClientFormat {
+    fn get_format(_: Option<image::DynamicImage>) -> ClientFormat {
         ClientFormat::U8U8U8U8
     }
 
@@ -704,8 +829,8 @@ impl Texture2dData<u8> for image::DynamicImage {
         Texture2dData::into_vec(self.to_rgba())
     }
 
-    fn from_vec(_: Vec<u8>, _: u32) -> image::DynamicImage {
-        unimplemented!()        // TODO: 
+    fn from_vec(data: Vec<u8>, width: u32) -> image::DynamicImage {
+        image::DynamicImage::ImageRgba8(Texture2dData::from_vec(data, width))
     }
 }
 
@@ -713,7 +838,7 @@ impl Texture2dData<u8> for image::DynamicImage {
 #[experimental = "Will be rewritten to use an associated type"]
 pub trait Texture3dData<P> {
     /// Returns the format of the pixels.
-    fn get_format(&self) -> ClientFormat;
+    fn get_format(Option<Self>) -> ClientFormat;
 
     /// Returns the dimensions of the texture.
     fn get_dimensions(&self) -> (u32, u32, u32);
@@ -726,7 +851,7 @@ pub trait Texture3dData<P> {
 }
 
 impl<P: PixelValue> Texture3dData<P> for Vec<Vec<Vec<P>>> {
-    fn get_format(&self) -> ClientFormat {
+    fn get_format(_: Option<Vec<Vec<Vec<P>>>>) -> ClientFormat {
         PixelValue::get_format(None::<P>)
     }
 
@@ -786,6 +911,8 @@ impl TextureImplementation {
         height: Option<u32>, depth: Option<u32>, array_size: Option<u32>) -> TextureImplementation
         where P: Send
     {
+        use std::num::Float;
+
         if let Some(ref data) = data {
             if width as uint * height.unwrap_or(1) as uint * depth.unwrap_or(1) as uint *
                 array_size.unwrap_or(1) as uint != data.len() &&
@@ -807,6 +934,9 @@ impl TextureImplementation {
         } else {
             gl::TEXTURE_3D
         };
+
+        let texture_levels = 1 + (::std::cmp::max(width, ::std::cmp::max(height.unwrap_or(1),
+                                 depth.unwrap_or(1))) as f32).log2() as gl::types::GLsizei;
 
         let (tx, rx) = channel();
         display.context.context.exec(move |: ctxt| {
@@ -842,17 +972,58 @@ impl TextureImplementation {
                     gl::LINEAR_MIPMAP_LINEAR as i32);
 
                 if texture_type == gl::TEXTURE_3D || texture_type == gl::TEXTURE_2D_ARRAY {
-                    ctxt.gl.TexImage3D(texture_type, 0, format as i32, width as i32,
-                        height.unwrap() as i32,
-                        if let Some(d) = depth { d } else { array_size.unwrap_or(1) } as i32, 0,
-                        client_format as u32, client_type, data_raw);
+                    if ctxt.version >= &GlVersion(4, 2) || ctxt.extensions.gl_arb_texture_storage {
+                        ctxt.gl.TexStorage3D(texture_type, texture_levels,
+                                             format as gl::types::GLenum,
+                                             width as gl::types::GLsizei,
+                                             height.unwrap() as gl::types::GLsizei,
+                                             depth.unwrap() as gl::types::GLsizei);
+
+                        ctxt.gl.TexSubImage3D(texture_type, 0, 0, 0, 0,
+                                              width as gl::types::GLsizei,
+                                              height.unwrap() as gl::types::GLsizei,
+                                              depth.unwrap() as gl::types::GLsizei,
+                                              client_format, client_type, data_raw);
+
+                    } else {
+                        ctxt.gl.TexImage3D(texture_type, 0, format as i32, width as i32,
+                                           height.unwrap() as i32,
+                                           if let Some(d) = depth { d } else {
+                                               array_size.unwrap_or(1)
+                                           } as i32, 0,
+                                           client_format as u32, client_type, data_raw);
+                    }
 
                 } else if texture_type == gl::TEXTURE_2D || texture_type == gl::TEXTURE_1D_ARRAY {
-                    ctxt.gl.TexImage2D(texture_type, 0, format as i32, width as i32,
-                        height.unwrap() as i32, 0, client_format as u32, client_type, data_raw);
+                    if ctxt.version >= &GlVersion(4, 2) || ctxt.extensions.gl_arb_texture_storage {
+                        ctxt.gl.TexStorage2D(texture_type, texture_levels,
+                                             format as gl::types::GLenum,
+                                             width as gl::types::GLsizei,
+                                             height.unwrap() as gl::types::GLsizei);
+
+                        ctxt.gl.TexSubImage2D(texture_type, 0, 0, 0, width as gl::types::GLsizei,
+                                              height.unwrap() as gl::types::GLsizei,
+                                              client_format, client_type, data_raw);
+
+                    } else {
+                        ctxt.gl.TexImage2D(texture_type, 0, format as i32, width as i32,
+                                           height.unwrap() as i32, 0, client_format as u32,
+                                           client_type, data_raw);   
+                    }
+
                 } else {
-                    ctxt.gl.TexImage1D(texture_type, 0, format as i32, width as i32, 0,
-                        client_format as u32, client_type, data_raw);
+                    if ctxt.version >= &GlVersion(4, 2) || ctxt.extensions.gl_arb_texture_storage {
+                        ctxt.gl.TexStorage1D(texture_type, texture_levels,
+                                             format as gl::types::GLenum,
+                                             width as gl::types::GLsizei);
+
+                        ctxt.gl.TexSubImage1D(texture_type, 0, 0, width as gl::types::GLsizei,
+                                              client_format, client_type, data_raw);
+
+                    } else {
+                        ctxt.gl.TexImage1D(texture_type, 0, format as i32, width as i32, 0,
+                                           client_format as u32, client_type, data_raw);
+                    }
                 }
 
                 if ctxt.version >= &GlVersion(3, 0) {
@@ -886,6 +1057,7 @@ impl TextureImplementation {
         let pixels_count = (self.width * self.height.unwrap_or(1) * self.depth.unwrap_or(1))
                             as uint;
 
+        // FIXME: WRONG
         let (format, gltype) = PixelValue::get_format(None::<P>).to_gl_enum();
         let my_id = self.id;
 
@@ -918,6 +1090,13 @@ impl TextureImplementation {
 
         rx.recv()
     }
+
+    /// Returns the `Display` associated to this texture.
+    pub fn get_display(&self) -> ::Display {
+        ::Display {
+            context: self.display.clone()
+        }
+    }
 }
 
 impl GlObject for TextureImplementation {
@@ -935,11 +1114,17 @@ impl fmt::Show for TextureImplementation {
 
 impl Drop for TextureImplementation {
     fn drop(&mut self) {
+        use fbo;
+
         // removing FBOs which contain this texture
         {
             let mut fbos = self.display.framebuffer_objects.lock();
-            let to_delete = fbos.keys().filter(|b| b.colors.iter().find(|&id| id == &self.id).is_some())
-                .map(|k| k.clone()).collect::<Vec<_>>();
+
+            let to_delete = fbos.keys().filter(|b| {
+                b.colors.iter().find(|&&(_, id)| id == fbo::Attachment::Texture(self.id)).is_some() ||
+                b.depth == Some(fbo::Attachment::Texture(self.id)) || b.stencil == Some(fbo::Attachment::Texture(self.id))
+            }).map(|k| k.clone()).collect::<Vec<_>>();
+
             for k in to_delete.into_iter() {
                 fbos.remove(&k);
             }
@@ -955,7 +1140,7 @@ impl Drop for TextureImplementation {
 /// Struct that allows you to draw on a texture.
 ///
 /// To obtain such an object, call `texture.as_surface()`.
-pub struct TextureSurface<'a>(framebuffer::FrameBuffer<'a>);
+pub struct TextureSurface<'a>(framebuffer::SimpleFrameBuffer<'a>);
 
 impl<'a> Surface for TextureSurface<'a> {
     fn clear_color(&mut self, red: f32, green: f32, blue: f32, alpha: f32) {
@@ -982,9 +1167,10 @@ impl<'a> Surface for TextureSurface<'a> {
         self.0.get_stencil_buffer_bits()
     }
 
-    fn draw<V, I, U>(&mut self, vb: &::VertexBuffer<V>, ib: &I, program: &::Program,
-        uniforms: &U, draw_parameters: &::DrawParameters) where I: ::IndicesSource,
-        U: ::uniforms::Uniforms
+    fn draw<V, I, ID, U>(&mut self, vb: &V, ib: &I, program: &::Program,
+        uniforms: &U, draw_parameters: &::DrawParameters)
+        where I: ::index_buffer::ToIndicesSource<ID>,
+        U: ::uniforms::Uniforms, V: ::vertex_buffer::ToVerticesSource
     {
         self.0.draw(vb, ib, program, uniforms, draw_parameters)
     }

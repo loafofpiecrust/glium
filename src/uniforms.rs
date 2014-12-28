@@ -33,6 +33,21 @@ let uniforms = Uniforms {
 
 Each field must implement the `UniformValue` trait.
 
+## Sampler
+
+In order to customize the way a texture is being sampled, you must use a `Sampler`.
+
+```no_run
+use std::default::Default;
+# let display: glium::Display = unsafe { std::mem::uninitialized() };
+# let texture: glium::texture::Texture2d = unsafe { std::mem::uninitialized() };
+let uniforms = glium::uniforms::UniformsStorage::new("texture",
+	glium::uniforms::Sampler(&texture, glium::uniforms::SamplerBehavior {
+		magnify_filter: glium::uniforms::MagnifySamplerFilter::Nearest,
+		.. Default::default()
+	}));
+```
+
 */
 use {gl, context, texture};
 //use cgmath;
@@ -41,6 +56,7 @@ use nalgebra;
 use std::sync::Arc;
 
 use GlObject;
+use ToGlEnum;
 
 /// Represents a value that can be used as the value of a uniform.
 ///
@@ -90,10 +106,22 @@ impl UniformValueBinder {
 			UniformValueBinderImpl::Vec4(val) => {
 				ctxt.gl.Uniform4fv(location, 1, val.as_ptr() as *const f32)
 			},
-			UniformValueBinderImpl::Texture(id) => {
+			UniformValueBinderImpl::Texture(id, sampler) => {
+				assert!(*active_texture < gl::TEXTURE0 +
+						ctxt.capabilities.max_combined_texture_image_units as gl::types::GLenum);
+
 				ctxt.gl.ActiveTexture(*active_texture as u32);
 				ctxt.gl.BindTexture(gl::TEXTURE_2D, id);      // FIXME: check bind point
 				ctxt.gl.Uniform1i(location, (*active_texture - gl::TEXTURE0) as gl::types::GLint);
+
+				if let Some(sampler) = sampler {
+					ctxt.gl.BindSampler((*active_texture - gl::TEXTURE0) as gl::types::GLenum,
+										sampler);
+				} else {
+					ctxt.gl.BindSampler((*active_texture - gl::TEXTURE0) as gl::types::GLenum,
+										0);
+				}
+
 				*active_texture += 1;
 			}
 		}
@@ -110,7 +138,7 @@ enum UniformValueBinderImpl {
 	Vec2([f32, ..2]),
 	Vec3([f32, ..3]),
 	Vec4([f32, ..4]),
-	Texture(gl::types::GLuint),
+	Texture(gl::types::GLuint, Option<gl::types::GLuint>),
 }
 
 /// Object that contains all the uniforms of a program with their bindings points.
@@ -212,7 +240,7 @@ pub enum SamplerWrapFunction {
 	Clamp
 }
 
-impl SamplerWrapFunction {
+impl ToGlEnum for SamplerWrapFunction {
 	fn to_glenum(&self) -> gl::types::GLenum {
 		match *self {
 			SamplerWrapFunction::Repeat => gl::REPEAT,
@@ -224,20 +252,58 @@ impl SamplerWrapFunction {
 
 /// The function that the GPU will use when loading the value of a texel.
 #[deriving(Show, Clone, Copy, Hash, PartialEq, Eq)]
-pub enum SamplerFilter {
+pub enum MagnifySamplerFilter {
 	/// The nearest texel will be loaded.
 	Nearest,
 
 	/// All nearby texels will be loaded and their values will be merged.
-	Linear
+	Linear,
 }
 
-impl SamplerFilter {
-	#[doc(hidden)]      // TODO: hacky
-	pub fn to_glenum(&self) -> gl::types::GLenum {
+impl ToGlEnum for MagnifySamplerFilter {
+	fn to_glenum(&self) -> gl::types::GLenum {
 		match *self {
-			SamplerFilter::Nearest => gl::NEAREST,
-			SamplerFilter::Linear => gl::LINEAR,
+			MagnifySamplerFilter::Nearest => gl::NEAREST,
+			MagnifySamplerFilter::Linear => gl::LINEAR,
+		}
+	}
+}
+
+/// The function that the GPU will use when loading the value of a texel.
+#[deriving(Show, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum MinifySamplerFilter {
+	/// The nearest texel will be loaded.
+	///
+	/// Only uses the main texture, mipmaps are totally ignored.
+	Nearest,
+
+	/// All nearby texels will be loaded and their values will be merged.
+	///
+	/// Only uses the main texture, mipmaps are totally ignored.
+	Linear,
+
+	/// The nearest texel of the nearest mipmap will be loaded.
+	NearestMipmapNearest,
+
+	/// Takes the nearest texel from the two nearest mipmaps, and merges them.
+	LinearMipmapNearest,
+
+	/// Same as `Linear` but from the nearest mipmap.
+	NearestMipmapLinear,
+
+	///
+	LinearMipmapLinear,
+}
+
+impl ToGlEnum for MinifySamplerFilter {
+	fn to_glenum(&self) -> gl::types::GLenum {
+		match *self {
+			MinifySamplerFilter::Nearest => gl::NEAREST,
+			MinifySamplerFilter::Linear => gl::LINEAR,
+			MinifySamplerFilter::NearestMipmapNearest => gl::NEAREST_MIPMAP_NEAREST,
+			MinifySamplerFilter::LinearMipmapNearest => gl::LINEAR_MIPMAP_NEAREST,
+			MinifySamplerFilter::NearestMipmapLinear => gl::NEAREST_MIPMAP_LINEAR,
+			MinifySamplerFilter::LinearMipmapLinear => gl::LINEAR_MIPMAP_LINEAR,
 		}
 	}
 }
@@ -247,8 +313,9 @@ pub struct Sampler<'t, T: 't>(pub &'t T, pub SamplerBehavior);
 
 impl<'t, T: texture::Texture + 't> UniformValue for Sampler<'t, T> {
 	fn to_binder(&self) -> UniformValueBinder {
-		// TODO: use the behavior too
-		self.0.get_implementation().to_binder()
+		let t = self.0.get_implementation();
+		let sampler = get_sampler(&t.get_display(), &self.1);
+		UniformValueBinder(UniformValueBinderImpl::Texture(t.get_id(), Some(sampler)))
 	}
 }
 
@@ -260,9 +327,19 @@ pub struct SamplerBehavior {
 	/// Functions to use for the X, Y, and Z coordinates.
 	pub wrap_function: (SamplerWrapFunction, SamplerWrapFunction, SamplerWrapFunction),
 	/// Filter to use when mignifying the texture.
-	pub minify_filter: SamplerFilter,
+	pub minify_filter: MinifySamplerFilter,
 	/// Filter to use when magnifying the texture.
-	pub magnify_filter: SamplerFilter,
+	pub magnify_filter: MagnifySamplerFilter,
+	/// `1` means no anisotropic filtering, any value superior to `1` does.
+	///
+	/// ## Compatibility
+	///
+	/// This parameter is always available. However it is ignored on hardware that does
+	/// not support anisotropic filtering.
+	///
+	/// If you set the value to a value higher than what the hardware supports, it will
+	/// be clamped.
+	pub max_anisotropy: u16,
 }
 
 impl ::std::default::Default for SamplerBehavior {
@@ -273,23 +350,26 @@ impl ::std::default::Default for SamplerBehavior {
 				SamplerWrapFunction::Mirror,
 				SamplerWrapFunction::Mirror
 			),
-			minify_filter: SamplerFilter::Linear,
-			magnify_filter: SamplerFilter::Linear,
+			minify_filter: MinifySamplerFilter::Linear,
+			magnify_filter: MagnifySamplerFilter::Linear,
+			max_anisotropy: 1,
 		}
 	}
 }
 
 /// An OpenGL sampler object.
-// TODO: cache parameters set in the sampler
-struct SamplerObject {
+#[doc(hidden)]      // TODO: hack
+pub struct SamplerObject {
 	display: Arc<super::DisplayImpl>,
 	id: gl::types::GLuint,
 }
 
 impl SamplerObject {
-	pub fn new(display: &super::Display) -> SamplerObject {
+	#[doc(hidden)]
+	pub fn new(display: &super::Display, behavior: &SamplerBehavior) -> SamplerObject {
 		let (tx, rx) = channel();
 
+		let behavior = behavior.clone();
 		display.context.context.exec(move |: ctxt| {
 			let sampler = unsafe {
 				use std::mem;
@@ -297,6 +377,29 @@ impl SamplerObject {
 				ctxt.gl.GenSamplers(1, &mut sampler);
 				sampler
 			};
+
+			unsafe {
+				ctxt.gl.SamplerParameteri(sampler, gl::TEXTURE_WRAP_S,
+					behavior.wrap_function.0.to_glenum() as gl::types::GLint);
+				ctxt.gl.SamplerParameteri(sampler, gl::TEXTURE_WRAP_T,
+					behavior.wrap_function.1.to_glenum() as gl::types::GLint);
+				ctxt.gl.SamplerParameteri(sampler, gl::TEXTURE_WRAP_R,
+					behavior.wrap_function.2.to_glenum() as gl::types::GLint);
+				ctxt.gl.SamplerParameteri(sampler, gl::TEXTURE_MIN_FILTER,
+					behavior.minify_filter.to_glenum() as gl::types::GLint);
+				ctxt.gl.SamplerParameteri(sampler, gl::TEXTURE_MAG_FILTER,
+					behavior.magnify_filter.to_glenum() as gl::types::GLint);
+
+				if let Some(max_value) = ctxt.capabilities.max_texture_max_anisotropy {
+					let value = if behavior.max_anisotropy as f32 > max_value {
+						max_value
+					} else {
+						behavior.max_anisotropy as f32
+					};
+
+					ctxt.gl.SamplerParameterf(sampler, gl::TEXTURE_MAX_ANISOTROPY_EXT, value);
+				}
+			}
 
 			tx.send(sampler);
 		});
@@ -306,26 +409,10 @@ impl SamplerObject {
 			id: rx.recv(),
 		}
 	}
+}
 
-	pub fn bind(&self, gl: gl::Gl, sampler: SamplerBehavior) {
-		let id = self.id;
-		self.display.context.exec(move |: ctxt| {
-			unsafe {
-				ctxt.gl.SamplerParameteri(id, gl::TEXTURE_WRAP_S,
-					sampler.wrap_function.0.to_glenum() as gl::types::GLint);
-				ctxt.gl.SamplerParameteri(id, gl::TEXTURE_WRAP_T,
-					sampler.wrap_function.1.to_glenum() as gl::types::GLint);
-				ctxt.gl.SamplerParameteri(id, gl::TEXTURE_WRAP_R,
-					sampler.wrap_function.2.to_glenum() as gl::types::GLint);
-				ctxt.gl.SamplerParameteri(id, gl::TEXTURE_MIN_FILTER,
-					sampler.minify_filter.to_glenum() as gl::types::GLint);
-				ctxt.gl.SamplerParameteri(id, gl::TEXTURE_MAG_FILTER,
-					sampler.magnify_filter.to_glenum() as gl::types::GLint);
-			}
-		});
-	}
-
-	pub fn get_id(&self) -> gl::types::GLuint {
+impl GlObject for SamplerObject {
+	fn get_id(&self) -> gl::types::GLuint {
 		self.id
 	}
 }
@@ -341,6 +428,17 @@ impl Drop for SamplerObject {
 	}
 }
 
+fn get_sampler(display: &::Display, behavior: &SamplerBehavior) -> gl::types::GLuint {
+	match display.context.samplers.lock().get(behavior) {
+		Some(obj) => return obj.get_id(),
+		None => ()
+	};
+
+	let sampler = SamplerObject::new(display, behavior);
+	let id = sampler.get_id();
+	display.context.samplers.lock().insert(behavior.clone(), sampler);
+	id
+}
 
 impl UniformValue for i8 {
 	fn to_binder(&self) -> UniformValueBinder {
@@ -440,13 +538,13 @@ impl UniformValue for [f32, ..4] {
 
 impl<'a> UniformValue for &'a texture::TextureImplementation {
 	fn to_binder(&self) -> UniformValueBinder {
-		UniformValueBinder(UniformValueBinderImpl::Texture(self.get_id()))
+		UniformValueBinder(UniformValueBinderImpl::Texture(self.get_id(), None))
 	}
 }
 
 impl<'a> UniformValue for Arc<texture::TextureImplementation> {
 	fn to_binder(&self) -> UniformValueBinder {
-		UniformValueBinder(UniformValueBinderImpl::Texture(self.get_id()))
+		UniformValueBinder(UniformValueBinderImpl::Texture(self.get_id(), None))
 	}
 }
 
