@@ -54,6 +54,7 @@ use {gl, context, texture};
 use nalgebra;
 
 use std::sync::Arc;
+use std::rc::Rc;
 
 use GlObject;
 use ToGlEnum;
@@ -543,6 +544,12 @@ impl<'a> UniformValue for &'a texture::TextureImplementation {
 }
 
 impl<'a> UniformValue for Arc<texture::TextureImplementation> {
+	fn to_binder(&self) -> UniformValueBinder {
+		UniformValueBinder(UniformValueBinderImpl::Texture(self.get_id(), None))
+	}
+}
+
+impl<'a> UniformValue for Rc<texture::TextureImplementation> {
 	fn to_binder(&self) -> UniformValueBinder {
 		UniformValueBinder(UniformValueBinderImpl::Texture(self.get_id(), None))
 	}
