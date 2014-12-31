@@ -50,14 +50,19 @@ let uniforms = glium::uniforms::UniformsStorage::new("texture",
 
 */
 use {gl, context, texture};
-//use cgmath;
-use nalgebra;
+//use nalgebra;
 
 use std::sync::Arc;
 use std::rc::Rc;
 
 use GlObject;
 use ToGlEnum;
+
+#[cfg(feature = "cgmath")]
+use cgmath;
+
+#[cfg(feature = "nalgebra")]
+use nalgebra;
 
 /// Represents a value that can be used as the value of a uniform.
 ///
@@ -555,6 +560,7 @@ impl<'a> UniformValue for Rc<texture::TextureImplementation> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Mat2<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.as_array();
@@ -562,6 +568,7 @@ impl UniformValue for nalgebra::Mat2<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Mat3<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.as_array();
@@ -569,6 +576,7 @@ impl UniformValue for nalgebra::Mat3<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Mat4<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.as_array();
@@ -576,6 +584,7 @@ impl UniformValue for nalgebra::Mat4<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Ortho3<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.to_mat(); // Bind to a Mat4
@@ -583,6 +592,7 @@ impl UniformValue for nalgebra::Ortho3<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::OrthoMat3<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.as_mat(); // Bind to a Mat4
@@ -590,6 +600,7 @@ impl UniformValue for nalgebra::OrthoMat3<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Persp3<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.to_mat(); // Bind to a Mat4
@@ -597,6 +608,7 @@ impl UniformValue for nalgebra::Persp3<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::PerspMat3<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.as_mat(); // Bind to a Mat4
@@ -604,6 +616,7 @@ impl UniformValue for nalgebra::PerspMat3<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Pnt2<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.as_array();
@@ -611,6 +624,7 @@ impl UniformValue for nalgebra::Pnt2<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Pnt3<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.as_array();
@@ -618,6 +632,7 @@ impl UniformValue for nalgebra::Pnt3<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Pnt4<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.as_array();
@@ -625,6 +640,7 @@ impl UniformValue for nalgebra::Pnt4<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Quat<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.as_array();
@@ -632,6 +648,7 @@ impl UniformValue for nalgebra::Quat<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Rot2<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.submat(); // Bind to a Mat2
@@ -639,6 +656,7 @@ impl UniformValue for nalgebra::Rot2<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Rot3<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.submat(); // Bind to a Mat3
@@ -646,6 +664,7 @@ impl UniformValue for nalgebra::Rot3<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Rot4<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.submat(); // Bind to a Mat4
@@ -653,6 +672,7 @@ impl UniformValue for nalgebra::Rot4<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::UnitQuat<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.quat(); // Bind to a Quat
@@ -660,6 +680,7 @@ impl UniformValue for nalgebra::UnitQuat<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Vec2<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.as_array();
@@ -667,6 +688,7 @@ impl UniformValue for nalgebra::Vec2<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Vec3<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.as_array();
@@ -674,6 +696,7 @@ impl UniformValue for nalgebra::Vec3<f32> {
 	}
 }
 
+#[cfg(feature = "nalgebra")]
 impl UniformValue for nalgebra::Vec4<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		let my_value = self.as_array();
@@ -682,7 +705,10 @@ impl UniformValue for nalgebra::Vec4<f32> {
 }
 
 
-/*impl UniformValue for cgmath::Matrix2<f32> {
+// cgmath
+
+#[cfg(feature = "cgmath")]
+impl UniformValue for cgmath::Matrix2<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		use cgmath::FixedArray;
 		let my_value = self.into_fixed();
@@ -690,6 +716,7 @@ impl UniformValue for nalgebra::Vec4<f32> {
 	}
 }
 
+#[cfg(feature = "cgmath")]
 impl UniformValue for cgmath::Matrix3<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		use cgmath::FixedArray;
@@ -698,6 +725,7 @@ impl UniformValue for cgmath::Matrix3<f32> {
 	}
 }
 
+#[cfg(feature = "cgmath")]
 impl UniformValue for cgmath::Matrix4<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		use cgmath::FixedArray;
@@ -706,6 +734,7 @@ impl UniformValue for cgmath::Matrix4<f32> {
 	}
 }
 
+#[cfg(feature = "cgmath")]
 impl UniformValue for cgmath::Vector2<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		use cgmath::FixedArray;
@@ -714,6 +743,7 @@ impl UniformValue for cgmath::Vector2<f32> {
 	}
 }
 
+#[cfg(feature = "cgmath")]
 impl UniformValue for cgmath::Vector3<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		use cgmath::FixedArray;
@@ -722,10 +752,11 @@ impl UniformValue for cgmath::Vector3<f32> {
 	}
 }
 
+#[cfg(feature = "cgmath")]
 impl UniformValue for cgmath::Vector4<f32> {
 	fn to_binder(&self) -> UniformValueBinder {
 		use cgmath::FixedArray;
 		let my_value = self.into_fixed();
 		my_value.to_binder()
 	}
-}*/
+}

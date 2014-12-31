@@ -18,10 +18,10 @@ headless = ["glutin/headless"]
 git = "https://github.com/huonw/compile_msg"
 
 [dependencies.gl_common]
-git = "http://github.com/bjz/gl-rs"
+git = "https://github.com/bjz/gl-rs"
 
 [dependencies.glutin]
-git = "http://github.com/tomaka/glutin"
+git = "https://github.com/tomaka/glutin"
 features = ["window"]
 
 #[dependencies.cgmath]
