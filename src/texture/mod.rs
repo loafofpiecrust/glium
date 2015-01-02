@@ -22,7 +22,7 @@ use std::rc::Rc;
 
 use buffer::{mod, Buffer};
 use context::GlVersion;
-use uniforms::{UniformValue, UniformValueBinder};
+use uniforms::{UniformValue, IntoUniformValue, Sampler};
 use {Surface, GlObject, ToGlEnum};
 
 pub use self::pixel::PixelValue;
@@ -980,11 +980,13 @@ impl TextureImplementation {
 											 height.unwrap() as gl::types::GLsizei,
 											 depth.unwrap() as gl::types::GLsizei);
 
-						ctxt.gl.TexSubImage3D(texture_type, 0, 0, 0, 0,
-											  width as gl::types::GLsizei,
-											  height.unwrap() as gl::types::GLsizei,
-											  depth.unwrap() as gl::types::GLsizei,
-											  client_format, client_type, data_raw);
+						if !data_raw.is_null() {
+							ctxt.gl.TexSubImage3D(texture_type, 0, 0, 0, 0,
+												  width as gl::types::GLsizei,
+												  height.unwrap() as gl::types::GLsizei,
+												  depth.unwrap() as gl::types::GLsizei,
+												  client_format, client_type, data_raw);
+						}
 
 					} else {
 						ctxt.gl.TexImage3D(texture_type, 0, format as i32, width as i32,
@@ -1002,9 +1004,11 @@ impl TextureImplementation {
 											 width as gl::types::GLsizei,
 											 height.unwrap() as gl::types::GLsizei);
 
-						ctxt.gl.TexSubImage2D(texture_type, 0, 0, 0, width as gl::types::GLsizei,
-											  height.unwrap() as gl::types::GLsizei,
-											  client_format, client_type, data_raw);
+						if !data_raw.is_null() {
+							ctxt.gl.TexSubImage2D(texture_type, 0, 0, 0, width as gl::types::GLsizei,
+												  height.unwrap() as gl::types::GLsizei,
+												  client_format, client_type, data_raw);
+						}
 
 					} else {
 						ctxt.gl.TexImage2D(texture_type, 0, format as i32, width as i32,
@@ -1018,8 +1022,10 @@ impl TextureImplementation {
 											 format as gl::types::GLenum,
 											 width as gl::types::GLsizei);
 
-						ctxt.gl.TexSubImage1D(texture_type, 0, 0, width as gl::types::GLsizei,
-											  client_format, client_type, data_raw);
+						if !data_raw.is_null() {
+							ctxt.gl.TexSubImage1D(texture_type, 0, 0, width as gl::types::GLsizei,
+												  client_format, client_type, data_raw);
+						}
 
 					} else {
 						ctxt.gl.TexImage1D(texture_type, 0, format as i32, width as i32, 0,
@@ -1168,8 +1174,8 @@ impl<'a> Surface for TextureSurface<'a> {
 		self.0.get_stencil_buffer_bits()
 	}
 
-	fn draw<'v, V, I, ID, U>(&mut self, vb: V, ib: &I, program: &::Program,
-		uniforms: &U, draw_parameters: &::DrawParameters)
+	fn draw<'b, 'v, V, I, ID, U>(&mut self, vb: V, ib: &I, program: &::Program,
+		uniforms: U, draw_parameters: &::DrawParameters)
 		where I: ::index_buffer::ToIndicesSource<ID>,
 		U: ::uniforms::Uniforms, V: ::vertex_buffer::IntoVerticesSource<'v>
 	{

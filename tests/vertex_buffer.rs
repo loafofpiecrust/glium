@@ -33,7 +33,6 @@ fn vertex_buffer_creation() {
 }
 
 #[test]
-#[cfg(feature = "gl_extensions")]
 fn vertex_buffer_mapping_read() {
     let display = support::build_display();
 
@@ -59,7 +58,6 @@ fn vertex_buffer_mapping_read() {
 }
 
 #[test]
-#[cfg(feature = "gl_extensions")]
 fn vertex_buffer_mapping_write() {
     let display = support::build_display();
     
@@ -161,4 +159,27 @@ fn vertex_buffer_read_slice_out_of_bounds() {
     );
 
     vb.read_slice(0, 3);
+}
+
+#[test]
+fn vertex_buffer_any() {
+    let display = support::build_display();
+
+    #[vertex_format]
+    #[allow(dead_code)]
+    #[deriving(Copy)]
+    struct Vertex {
+        field1: [f32, ..3],
+        field2: [f32, ..3],
+    }
+
+    glium::VertexBuffer::new(&display, 
+        vec![
+            Vertex { field1: [-0.5, -0.5, 0.0], field2: [0.0, 1.0, 0.0] },
+            Vertex { field1: [ 0.0,  0.5, 1.0], field2: [0.0, 0.0, 1.0] },
+            Vertex { field1: [ 0.5, -0.5, 0.0], field2: [1.0, 0.0, 0.0] },
+        ]
+    ).into_vertex_buffer_any();
+
+    display.assert_no_error();
 }

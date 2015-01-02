@@ -387,6 +387,20 @@ pub struct DrawParameters {
 	/// The default is `Overwrite`.
 	pub depth_function: DepthFunction,
 
+	/// The range of Z coordinates in surface coordinates.
+	///
+	/// Just like OpenGL turns X and Y coordinates between `-1.0` and `1.0` into surface
+	/// coordinates, it will also map your Z coordinates to a certain range which you can
+	/// specify here.
+	///
+	/// The two values must be between `0.0` and `1.0`, anything outside this range will result
+	/// in a panic. By default the depth range is `(0.0, 1.0)`.
+	///
+	/// The first value of the tuple must be the "near" value, where `-1.0` will be mapped.
+	/// The second value must be the "far" value, where `1.0` will be mapped.
+	/// It is possible for the "near" value to be greater than the "far" value.
+	pub depth_range: (f32, f32),
+
 	/// The function that the GPU will use to merge the existing pixel with the pixel that is
 	/// being written.
 	///
@@ -430,6 +444,7 @@ impl std::default::Default for DrawParameters {
 	fn default() -> DrawParameters {
 		DrawParameters {
 			depth_function: DepthFunction::Overwrite,
+			depth_range: (0.0, 1.0),
 			blending_function: Some(BlendingFunction::AlwaysReplace),
 			line_width: None,
 			backface_culling: BackfaceCullingMode::CullingDisabled,
@@ -441,6 +456,15 @@ impl std::default::Default for DrawParameters {
 }
 
 impl DrawParameters {
+	/// Checks parameters and panics if something is wrong.
+	fn validate(&self) {
+		if self.depth_range.0 < 0.0 || self.depth_range.0 > 1.0 ||
+		   self.depth_range.1 < 0.0 || self.depth_range.1 > 1.0
+		{
+			panic!("Depth range must be between 0 and 1");
+		}
+	}
+
 	/// Synchronizes the parmaeters with the current ctxt.state.
 	fn sync(&self, ctxt: &mut context::CommandContext, surface_dimensions: (u32, u32)) {
 		// depth function
@@ -462,6 +486,14 @@ impl DrawParameters {
 					ctxt.state.enabled_depth_test = true;
 				}
 			}
+		}
+
+		// depth range
+		if self.depth_range != ctxt.state.depth_range {
+			unsafe {
+				ctxt.gl.DepthRange(self.depth_range.0 as f64, self.depth_range.1 as f64);
+			}
+			ctxt.state.depth_range = self.depth_range;
 		}
 
 		// blending function
@@ -642,9 +674,10 @@ pub trait Surface {
 	/// - Panics if a program's attribute is not in the vertex source (does *not* panic if a
 	///   vertex's attribute is not used by the program).
 	/// - Panics if the viewport is larger than the dimensions supported by the hardware.
+	/// - Panics if the depth range is outside of `(0, 1)`.
 	///
-	fn draw<'a, V, I, ID, U>(&mut self, V, &I, program: &Program, uniforms: &U,
-		draw_parameters: &DrawParameters) where V: vertex_buffer::IntoVerticesSource<'a>,
+	fn draw<'a, 'b, V, I, ID, U>(&mut self, V, &I, program: &Program, uniforms: U,
+		draw_parameters: &DrawParameters) where V: vertex_buffer::IntoVerticesSource<'b>,
 		I: index_buffer::ToIndicesSource<ID>, U: uniforms::Uniforms;
 
 	/// Returns an opaque type that is used by the implementation of blit functions.
@@ -699,7 +732,7 @@ pub struct BlitHelper<'a>(&'a Arc<DisplayImpl>, Option<&'a fbo::FramebufferAttac
 /// The back- and front-buffers are swapped when the `Frame` is destroyed. This operation is
 /// instantaneous, even when vsync is enabled.
 pub struct Frame<'a> {
-	display: Arc<DisplayImpl>,
+	display: Display,
 	marker: std::kinds::marker::ContravariantLifetime<'a>,
 	dimensions: (uint, uint),
 }
@@ -712,15 +745,15 @@ impl<'t> Frame<'t> {
 
 impl<'t> Surface for Frame<'t> {
 	fn clear_color(&mut self, red: f32, green: f32, blue: f32, alpha: f32) {
-		fbo::clear_color(&self.display, None, red, green, blue, alpha)
+		fbo::clear_color(&self.display.context, None, red, green, blue, alpha)
 	}
 
 	fn clear_depth(&mut self, value: f32) {
-		fbo::clear_depth(&self.display, None, value)
+		fbo::clear_depth(&self.display.context, None, value)
 	}
 
 	fn clear_stencil(&mut self, value: int) {
-		fbo::clear_stencil(&self.display, None, value)
+		fbo::clear_stencil(&self.display.context, None, value)
 	}
 
 	fn get_dimensions(&self) -> (uint, uint) {
@@ -728,29 +761,31 @@ impl<'t> Surface for Frame<'t> {
 	}
 
 	fn get_depth_buffer_bits(&self) -> Option<u16> {
-		self.display.context.capabilities().depth_bits
+		self.display.context.context.capabilities().depth_bits
 	}
 
 	fn get_stencil_buffer_bits(&self) -> Option<u16> {
-		self.display.context.capabilities().stencil_bits
+		self.display.context.context.capabilities().stencil_bits
 	}
 
-	fn draw<'a, V, I, ID, U>(&mut self, vertex_buffer: V,
-							 index_buffer: &I, program: &Program, uniforms: &U,
-							 draw_parameters: &DrawParameters)
-							 where I: index_buffer::ToIndicesSource<ID>, U: uniforms::Uniforms,
-							 ID: index_buffer::Index, V: vertex_buffer::IntoVerticesSource<'a>
+	fn draw<'a, 'b, V, I, ID, U>(&mut self, vertex_buffer: V,
+						 index_buffer: &I, program: &Program, uniforms: U,
+						 draw_parameters: &DrawParameters)
+						 where I: index_buffer::ToIndicesSource<ID>, U: uniforms::Uniforms,
+						 ID: index_buffer::Index, V: vertex_buffer::IntoVerticesSource<'b>
 	{
 		use index_buffer::ToIndicesSource;
+
+		draw_parameters.validate();
 
 		if draw_parameters.depth_function.requires_depth_buffer() && !self.has_depth_buffer() {
 			panic!("Requested a depth function but no depth buffer is attached");
 		}
 
 		if let Some(viewport) = draw_parameters.viewport {
-			assert!(viewport.width <= self.display.context.capabilities().max_viewport_dims.0
+			assert!(viewport.width <= self.display.context.context.capabilities().max_viewport_dims.0
 					as u32, "Viewport dimensions are too large");
-			assert!(viewport.height <= self.display.context.capabilities().max_viewport_dims.1
+			assert!(viewport.height <= self.display.context.context.capabilities().max_viewport_dims.1
 					as u32, "Viewport dimensions are too large");
 		}
 
@@ -760,14 +795,14 @@ impl<'t> Surface for Frame<'t> {
 	}
 
 	fn get_blit_helper(&self) -> BlitHelper {
-		BlitHelper(&self.display, None)
+		BlitHelper(&self.display.context, None)
 	}
 }
 
 #[unsafe_destructor]
 impl<'t> Drop for Frame<'t> {
 	fn drop(&mut self) {
-		self.display.context.swap_buffers();
+		self.display.context.context.swap_buffers();
 	}
 }
 
@@ -903,7 +938,7 @@ impl Display {
 	/// Note that destroying a `Frame` is immediate, even if vsync is enabled.
 	pub fn draw(&self) -> Frame {
 		Frame {
-			display: self.context.clone(),
+			display: self.clone(),
 			marker: std::kinds::marker::ContravariantLifetime,
 			dimensions: self.get_framebuffer_dimensions(),
 		}
@@ -1033,7 +1068,7 @@ impl Display {
 
 		// SAFETY NOTICE: we pass a raw pointer to the `DisplayImpl`
 		let ptr: &DisplayImpl = self.context.deref();
-		let ptr = ptr as *const DisplayImpl;
+		let ptr = std::ptr::Unique(ptr as *const DisplayImpl as *mut DisplayImpl);
 
 		// enabling the callback
 		self.context.context.exec(move |: ctxt| {
@@ -1051,7 +1086,7 @@ impl Display {
 
 					// TODO: with GLES, the GL_KHR_debug function has a `KHR` suffix
 					//       but with GL only, it doesn't have one
-					ctxt.gl.DebugMessageCallback(callback_wrapper, ptr as *const libc::c_void);
+					ctxt.gl.DebugMessageCallback(callback_wrapper, ptr.0 as *const libc::c_void);
 					ctxt.gl.DebugMessageControl(gl::DONT_CARE, gl::DONT_CARE, gl::DONT_CARE, 0,
 						std::ptr::null(), gl::TRUE);
 
