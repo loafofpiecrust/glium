@@ -503,8 +503,20 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
     // `Texture` trait impl
     (writeln!(dest, "
                 impl Texture for {} {{
-                    fn get_implementation(&self) -> &TextureImplementation {{
-                        &self.0
+                    fn get_width(&self) -> u32 {{
+                        self.0.get_width()
+                    }}
+
+                    fn get_height(&self) -> Option<u32> {{
+                        self.0.get_height()
+                    }}
+
+                    fn get_depth(&self) -> Option<u32> {{
+                        self.0.get_depth()
+                    }}
+
+                    fn get_array_size(&self) -> Option<u32> {{
+                        self.0.get_array_size()
                     }}
                 }}
             ", name)).unwrap();
@@ -588,9 +600,9 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
     // writing the `new` function
     {
         let data_type = match dimensions {
-            TextureDimensions::Texture1d | TextureDimensions::Texture1dArray => "Texture1dData<P>",
-            TextureDimensions::Texture2d | TextureDimensions::Texture2dArray => "Texture2dData<P>",
-            TextureDimensions::Texture3d => "Texture3dData<P>",
+            TextureDimensions::Texture1d | TextureDimensions::Texture1dArray => "Texture1dData",
+            TextureDimensions::Texture2d | TextureDimensions::Texture2dArray => "Texture2dData",
+            TextureDimensions::Texture3d => "Texture3dData",
         };
 
         let param = match dimensions {
@@ -605,8 +617,8 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
                 /// Builds a new texture by uploading data.
                 ///
                 /// This function will automatically generate all mipmaps of the texture.
-                pub fn new<P: PixelValue, T: {data_type}>(display: &::Display, data: {param})
-                    -> {name}
+                pub fn new<T>(display: &::Display, data: {param})
+                              -> {name} where T: {data_type}
                 {{
             ", data_type = data_type, param = param, name = name)).unwrap();
 
@@ -786,9 +798,7 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
                 /// FBO and re-use it. When the texture is destroyed, the FBO is destroyed too.
                 ///
                 pub fn as_surface<'a>(&'a self) -> TextureSurface<'a> {{
-                    // TODO: hacky, shouldn't recreate a Display
-                    let display = ::Display {{ context: self.0.display.clone() }};
-                    TextureSurface(framebuffer::SimpleFrameBuffer::new(&display, self))
+                    TextureSurface(framebuffer::SimpleFrameBuffer::new(self.0.get_display(), self))
                 }}
             ")).unwrap();
     }
@@ -798,15 +808,15 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
     if dimensions != TextureDimensions::Texture1dArray && dimensions != TextureDimensions::Texture2dArray {
         let (data_type, constructor) = match dimensions {
             TextureDimensions::Texture1d | TextureDimensions::Texture1dArray => (
-                    "Texture1dData<P>",
+                    "Texture1dData",
                     "Texture1dData::from_vec(data)"
                 ),
             TextureDimensions::Texture2d | TextureDimensions::Texture2dArray => (
-                    "Texture2dData<P>",
+                    "Texture2dData",
                     "Texture2dData::from_vec(data, self.get_width() as u32)"
                 ),
             TextureDimensions::Texture3d => (
-                    "Texture3dData<P>",
+                    "Texture3dData",
                     "Texture3dData::from_vec(data, self.get_width() as u32, \
                                              self.get_height().unwrap() as u32)"
                 ),
@@ -819,7 +829,7 @@ fn build_texture<W: Writer>(mut dest: &mut W, ty: TextureType, dimensions: Textu
                 ///
                 /// This method is always only if the `gl_extensions` feature is enabled.
                 #[cfg(feature = "gl_extensions")]
-                pub fn read<P, T>(&self) -> T where P: PixelValue, T: {data_type} {{
+                pub fn read<P, T>(&self) -> T where T: {data_type}<Data = P>, P: PixelValue {{
                     let data = self.0.read::<P>(0);
                     {constructor}
                 }}

@@ -191,12 +191,13 @@ target.finish();
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-#[phase(plugin)]
-extern crate gl_generator;
+#[cfg(feature = "cgmath")]
+extern crate cgmath;
 extern crate glutin;
 #[cfg(feature = "image")]
 extern crate image;
 extern crate libc;
+#[cfg(feature = "nalgebra")]
 extern crate nalgebra;
 
 pub use index_buffer::IndexBuffer;
@@ -219,6 +220,7 @@ pub mod texture;
 mod buffer;
 mod context;
 mod fbo;
+mod ops;
 mod program;
 mod vertex_array_object;
 
@@ -259,23 +261,75 @@ pub enum BlendingFunction {
 	LerpBySourceAlpha,
 }
 
-/// Culling mode.
+/// Describes how triangles should be filtered before the fragment processing. Backface culling
+/// is purely an optimization. If you don't know what this does, just use `CullingDisabled`.
 ///
-/// Describes how triangles could be filtered before the fragment part.
+/// # Backface culling
+///
+/// After the vertex shader stage, the GPU knows the 2D coordinates of each vertex of
+/// each triangle.
+///
+/// For a given triangle, there are only two situations:
+///
+/// - The vertices are arranged in a clockwise way on the screen.
+/// - The vertices are arranged in a counterclockwise way on the screen.
+///
+/// If you wish so, you can ask the GPU to discard all the primitives that belong to one
+/// of these two categories.
+///
+/// ## Example
+///
+/// The vertices of this triangle are counter-clock-wise.
+///
+/// <svg width="556.84381" height="509.69049" version="1.1">
+///   <g transform="translate(-95.156215,-320.37201)">
+///     <path style="fill:none;stroke:#000000;stroke-width:4;stroke-miterlimit:4;stroke-opacity:1;stroke-dasharray:none" d="M 324.25897,418.99654 539.42145,726.08292 212.13204,741.23521 z" />
+///     <text style="font-size:40px;font-style:normal;font-weight:normal;line-height:125%;letter-spacing:0px;word-spacing:0px;fill:#000000;fill-opacity:1;stroke:none;font-family:Sans" x="296.98483" y="400.81378"><tspan x="296.98483" y="400.81378">1</tspan></text>
+///     <text style="font-size:40px;font-style:normal;font-weight:normal;line-height:125%;letter-spacing:0px;word-spacing:0px;fill:#000000;fill-opacity:1;stroke:none;font-family:Sans" x="175.22902" y="774.8031"><tspan x="175.22902" y="774.8031">2</tspan></text>
+///     <text style="font-size:40px;font-style:normal;font-weight:normal;line-height:125%;letter-spacing:0px;word-spacing:0px;fill:#000000;fill-opacity:1;stroke:none;font-family:Sans" x="555.58386" y="748.30627"><tspan x="555.58386" y="748.30627">3</tspan></text>
+///   </g>
+/// </svg>
+///
+/// # Usage
+///
+/// The trick is that if you make a 180° rotation of a shape, all triangles that were
+/// clockwise become counterclockwise and vice versa.
+///
+/// Therefore you can arrange your model so that the triangles that are facing the screen
+/// are all either clockwise or counterclockwise, and all the triangle are *not* facing
+/// the screen are the other one.
+///
+/// By doing so you can use backface culling to discard all the triangles that are not
+/// facing the screen, and increase your framerate.
+///
 #[deriving(Clone, Copy, Show, PartialEq, Eq)]
 pub enum BackfaceCullingMode {
 	/// All triangles are always drawn.
 	CullingDisabled,
 
-	/// Triangles whose vertices are counter-clock-wise won't be drawn.
+	/// Triangles whose vertices are counterclockwise won't be drawn.
 	CullCounterClockWise,
 
-	/// Triangles whose indices are clock-wise won't be drawn.
+	/// Triangles whose vertices are clockwise won't be drawn.
 	CullClockWise
 }
 
 /// The function that the GPU will use to determine whether to write over an existing pixel
-///  on the target.
+/// on the target.
+///
+/// # Depth buffers
+///
+/// After the fragment shader has been run, the GPU maps the output Z coordinates to the depth
+/// range (that you can specify in the draw parameters) in order to obtain the depth value in
+/// in window coordinates. This depth value is always between `0.0` and `1.0`.
+///
+/// In addition to the buffer where pixel colors are stored, you can also have a buffer
+/// which contains the depth value of each pixel. Whenever the GPU tries to write a pixel,
+/// it will first compare the depth value of the pixel to be written with the depth value that
+/// is stored at this location.
+///
+/// If you don't have a depth buffer available, you can only pass `Overwrite`. Glium detects if
+/// you pass any other value and reports an error.
 #[deriving(Clone, Copy, Show, PartialEq, Eq)]
 pub enum DepthFunction {
 	/// Never replace the target pixel.
@@ -342,6 +396,21 @@ impl ToGlEnum for DepthFunction {
 ///
 /// The usual value is `Fill`, which fills the content of polygon with the color. However other
 /// values are sometimes useful, especially for debugging purposes.
+///
+/// # Example
+///
+/// The same triangle drawn respectively with `Fill`, `Line` and `Point` (barely visible).
+///
+/// <svg width="890.26135" height="282.59375" version="1.1">
+///  <g transform="translate(0,-769.9375)">
+///     <path style="fill:#ff0000;fill-opacity:1;stroke:none" d="M 124.24877,771.03979 258.59906,1051.8622 0,1003.3749 z" />
+///     <path style="fill:none;fill-opacity:1;stroke:#ff0000;stroke-opacity:1" d="M 444.46713,771.03979 578.81742,1051.8622 320.21836,1003.3749 z" />
+///     <path style="fill:#ff0000;fill-opacity:1;stroke:none" d="m 814.91074,385.7662 c 0,0.0185 -0.015,0.0335 -0.0335,0.0335 -0.0185,0 -0.0335,-0.015 -0.0335,-0.0335 0,-0.0185 0.015,-0.0335 0.0335,-0.0335 0.0185,0 0.0335,0.015 0.0335,0.0335 z" transform="matrix(18.833333,0,0,18.833333,-14715.306,-6262.0056)" />
+///     <path style="fill:#ff0000;fill-opacity:1;stroke:none" d="m 814.91074,385.7662 c 0,0.0185 -0.015,0.0335 -0.0335,0.0335 -0.0185,0 -0.0335,-0.015 -0.0335,-0.0335 0,-0.0185 0.015,-0.0335 0.0335,-0.0335 0.0185,0 0.0335,0.015 0.0335,0.0335 z" transform="matrix(18.833333,0,0,18.833333,-14591.26,-6493.994)" />
+///     <path style="fill:#ff0000;fill-opacity:1;stroke:none" d="m 814.91074,385.7662 c 0,0.0185 -0.015,0.0335 -0.0335,0.0335 -0.0185,0 -0.0335,-0.015 -0.0335,-0.0335 0,-0.0185 0.015,-0.0335 0.0335,-0.0335 0.0185,0 0.0335,0.015 0.0335,0.0335 z" transform="matrix(18.833333,0,0,18.833333,-14457.224,-6213.6135)" />
+///  </g>
+/// </svg>
+///
 #[deriving(Clone, Copy, Show, PartialEq, Eq)]
 pub enum PolygonMode {
 	/// Only draw a single point at each vertex.
@@ -381,8 +450,11 @@ impl ToGlEnum for PolygonMode {
 ///
 #[deriving(Clone, Copy, Show, PartialEq)]
 pub struct DrawParameters {
+
 	/// The function that the GPU will use to determine whether to write over an existing pixel
 	/// on the target.
+	///
+	/// See the documentation of `DepthFunction` for more details.
 	///
 	/// The default is `Overwrite`.
 	pub depth_function: DepthFunction,
@@ -415,10 +487,14 @@ pub struct DrawParameters {
 	/// Whether or not the GPU should filter out some faces.
 	///
 	/// After the vertex shader stage, the GPU will try to remove the faces that aren't facing
-	///  the camera.
+	/// the camera.
+	///
+	/// See the documentation of `BackfaceCullingMode` for more infos.
 	pub backface_culling: BackfaceCullingMode,
 
 	/// Sets how to render polygons. The default value is `Fill`.
+	///
+	/// See the documentation of `PolygonMode` for more infos.
 	pub polygon_mode: PolygonMode,
 
 	/// Whether multisample antialiasing (MSAA) should be used. Default value is `true`.
@@ -699,7 +775,7 @@ pub trait Surface {
 	fn blit_color<S>(&self, source_rect: &Rect, target: &S, target_rect: &Rect,
 		filter: uniforms::MagnifySamplerFilter) where S: Surface
 	{
-		fbo::blit(self, target, gl::COLOR_BUFFER_BIT, source_rect, target_rect,
+		ops::blit(self, target, gl::COLOR_BUFFER_BIT, source_rect, target_rect,
 			filter.to_glenum())
 	}
 
@@ -745,15 +821,15 @@ impl<'t> Frame<'t> {
 
 impl<'t> Surface for Frame<'t> {
 	fn clear_color(&mut self, red: f32, green: f32, blue: f32, alpha: f32) {
-		fbo::clear_color(&self.display.context, None, red, green, blue, alpha)
+		ops::clear_color(&self.display.context, None, red, green, blue, alpha)
 	}
 
 	fn clear_depth(&mut self, value: f32) {
-		fbo::clear_depth(&self.display.context, None, value)
+		ops::clear_depth(&self.display.context, None, value)
 	}
 
 	fn clear_stencil(&mut self, value: int) {
-		fbo::clear_stencil(&self.display.context, None, value)
+		ops::clear_stencil(&self.display.context, None, value)
 	}
 
 	fn get_dimensions(&self) -> (uint, uint) {
@@ -789,7 +865,7 @@ impl<'t> Surface for Frame<'t> {
 					as u32, "Viewport dimensions are too large");
 		}
 
-		fbo::draw(&self.display, None, vertex_buffer.into_vertices_source(),
+		ops::draw(&self.display, None, vertex_buffer.into_vertices_source(),
 				  &index_buffer.to_indices_source(), program, uniforms, draw_parameters,
 				  (self.dimensions.0 as u32, self.dimensions.1 as u32))
 	}
@@ -1032,7 +1108,7 @@ impl Display {
 	{
 		// changing the callback
 		{
-			let mut cb = self.context.debug_callback.lock();
+			let mut cb = self.context.debug_callback.lock().unwrap();
 			*cb = Some(box callback as Box<FnMut(String, debug::Source, debug::MessageType,
 												 debug::Severity)
 										   + Send + Sync>);
@@ -1054,7 +1130,7 @@ impl Display {
 				let message = message.as_str().unwrap_or("<message was not utf-8>");
 
 				let ref mut callback = user_param.debug_callback;
-				let mut callback = callback.lock();
+				let mut callback = callback.lock().unwrap();
 				let callback = callback.deref_mut();
 
 				if let &Some(ref mut callback) = callback {
@@ -1117,7 +1193,7 @@ impl Display {
 	/// # }
 	/// ```
 	pub fn read_front_buffer<P, T>(&self) -> T          // TODO: remove Clone for P
-		where P: texture::PixelValue + Clone + Send, T: texture::Texture2dData<P>
+		where P: texture::PixelValue + Clone + Send, T: texture::Texture2dData<Data = P>
 	{
 		use std::mem;
 
@@ -1214,17 +1290,17 @@ impl Drop for DisplayImpl {
 		});
 
 		{
-			let mut fbos = self.framebuffer_objects.lock();
+			let mut fbos = self.framebuffer_objects.lock().unwrap();
 			fbos.clear();
 		}
 
 		{
-			let mut vaos = self.vertex_array_objects.lock();
+			let mut vaos = self.vertex_array_objects.lock().unwrap();
 			vaos.clear();
 		}
 
 		{
-			let mut samplers = self.samplers.lock();
+			let mut samplers = self.samplers.lock().unwrap();
 			samplers.clear();
 		}
 	}
